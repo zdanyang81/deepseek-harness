@@ -234,8 +234,14 @@ export interface SessionSearchItem {
 
 /** Session-domain unary methods (the map keys session.* of RpcMethodMap). */
 export interface SessionsApi {
-  /** Lists persisted sessions (updatedAt descending). v1 returns everything; cursor is a reserved seat, unimplemented. */
-  list(request: RpcRequest<{ cursor?: string }>): Promise<RpcResponse<{ items: SessionSummary[] }>>
+  /** Lists persisted sessions (updatedAt descending); bounded metadata consumers may omit projection blocks. */
+  list(request: RpcRequest<{
+    cursor?: string
+    /** Maximum activity-ordered rows to return, from 1 through 1,000; omitted returns every visible Session. */
+    limit?: number
+    /** Include Client projection blocks; defaults to true. */
+    includeProjections?: boolean
+  }>): Promise<RpcResponse<{ items: SessionSummary[] }>>
 
   /**
    * Searches the current user/assistant/steering message surface across

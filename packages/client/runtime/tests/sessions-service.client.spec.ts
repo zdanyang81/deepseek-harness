@@ -186,6 +186,24 @@ describe('current selection (migrated from ui-layout, arbitrated into the list s
     expect(b.svc.list.getSnapshot().current).toBe('s1') // failed open leaves the selection alone
   })
 
+  it('reuses the 2,500-row catalog projection when only current changes', async () => {
+    const b = bench()
+    await feedList(b, Array.from({ length: 2_500 }, (_, index) => ({ id: `large-${index}` })))
+    const before = b.svc.list.getSnapshot()
+
+    b.svc.open(sid('large-1250'))
+    const selected = b.svc.list.getSnapshot()
+    expect(selected.current).toBe('large-1250')
+    expect(selected.ids).toBe(before.ids)
+    expect(selected.byId).toBe(before.byId)
+
+    b.svc.clear()
+    const cleared = b.svc.list.getSnapshot()
+    expect(cleared.current).toBeUndefined()
+    expect(cleared.ids).toBe(before.ids)
+    expect(cleared.byId).toBe(before.byId)
+  })
+
   it('clear() blanks list.current and the persisted selection', async () => {
     const storage = new Map<string, string>()
     vi.stubGlobal('localStorage', {
@@ -492,6 +510,22 @@ describe('create', () => {
     expect(b.svc.list.getSnapshot().byId[born]).toMatchObject({ id: 'born', blank: true })
     expect(b.svc.binding(born)).toBeDefined()
     expect(b.svc.scope(born)).toBeDefined()
+  })
+
+  it('projects one added row once across the synchronous create handoff and queued notification', async () => {
+    const b = bench()
+    await feedList(b, Array.from({ length: 2_500 }, (_, index) => ({ id: `existing-${index}` })))
+    b.api.onCreate = () => Promise.resolve(ok({ sessionId: sid('born') }))
+
+    await b.svc.create({ sessionId: sid('born') })
+    const synchronous = b.svc.list.getSnapshot()
+    expect(synchronous.ids).toHaveLength(2_501)
+    expect(synchronous.ids[0]).toBe('born')
+
+    await Promise.resolve()
+    const flushed = b.svc.list.getSnapshot()
+    expect(flushed.ids).toBe(synchronous.ids)
+    expect(flushed.byId).toBe(synchronous.byId)
   })
 
   it('lists the published id after Workspace attachment fails (publication precedes attachment)', async () => {

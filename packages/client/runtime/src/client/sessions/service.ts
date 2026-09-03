@@ -34,6 +34,7 @@ import type { ConversationRuntime } from './conversation-assembler.ts'
 import { SessionManager } from './manager.ts'
 import type { SessionRemotes } from './remotes.ts'
 import type { SessionListPhase, SessionSearchResultItem, SubagentCatalogSnapshot } from './manager.ts'
+import type { SessionListEntry } from './lineage.ts'
 import type { PendingInteractionStatus } from './pending.ts'
 import { SessionProvideChannel } from './provide.ts'
 import type { Session } from './session.ts'
@@ -257,6 +258,10 @@ export class SessionRuntime implements ISessions {
   private readonly selection: SnapshotStore<SessionSelection>
 
   private readonly scopes = new Map<SessionId, ScopeRecord>()
+  /** Base list projection, rebuilt only when the manager publishes a different items array. */
+  private projectedItems: readonly SessionListEntry[] | undefined
+  private projectedIds: SessionId[] = []
+  private projectedById: Record<SessionId, SessionSummary> = {}
   /** The provide channel (roster, materialization rules, current projection) — shared with the test runtime's double. */
   private readonly provideChannel: SessionProvideChannel
   /**
@@ -652,8 +657,8 @@ export class SessionRuntime implements ISessions {
 
   /** The one aliveness predicate shared by scope mint and prune: host-listed or currently addressed. */
   private eligible(id: SessionId): boolean {
-    const { ids, current } = this.list.getSnapshot()
-    return current === id || ids.includes(id)
+    const { current } = this.list.getSnapshot()
+    return current === id || this.projectedById[id] !== undefined
   }
 
   /** Project the manager's list snapshot into the store (title derivation is display-only). */
@@ -661,31 +666,39 @@ export class SessionRuntime implements ISessions {
     const {
       items, current, phase, subagentsByParent, jobsBySession, currentAddress,
     } = this.manager.getListSnapshot()
-    const ids: SessionId[] = []
-    const byId: Record<SessionId, SessionSummary> = {}
-    for (const entry of items) {
-      ids.push(entry.sessionId)
-      byId[entry.sessionId] = {
-        id: entry.sessionId,
-        displayTitle: displayTitleOf(entry.title, entry.cwd, entry.sessionId),
-        running: entry.running,
-        ...(entry.completed ? { completed: true } : {}),
-        blank: entry.blank,
-        updatedAt: entry.updatedAt,
-        ...(entry.pendingInteraction === undefined
-          ? {}
-          : { pendingInteraction: entry.pendingInteraction }),
-        ...(entry.projectionValues === undefined
-          ? {}
-          : { projectionValues: entry.projectionValues }),
-        ...(entry.title !== undefined ? { title: entry.title } : {}),
-        ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}),
-        ...(entry.parentSessionId !== undefined ? { parentId: entry.parentSessionId } : {}),
-        ...(entry.origin !== undefined ? { origin: entry.origin } : {}),
-        ...(entry.agentPreset !== undefined ? { agentPreset: entry.agentPreset } : {}),
+    if (items !== this.projectedItems) {
+      const ids: SessionId[] = []
+      const byId: Record<SessionId, SessionSummary> = {}
+      for (const entry of items) {
+        ids.push(entry.sessionId)
+        byId[entry.sessionId] = {
+          id: entry.sessionId,
+          displayTitle: displayTitleOf(entry.title, entry.cwd, entry.sessionId),
+          running: entry.running,
+          ...(entry.completed ? { completed: true } : {}),
+          blank: entry.blank,
+          updatedAt: entry.updatedAt,
+          ...(entry.pendingInteraction === undefined
+            ? {}
+            : { pendingInteraction: entry.pendingInteraction }),
+          ...(entry.projectionValues === undefined
+            ? {}
+            : { projectionValues: entry.projectionValues }),
+          ...(entry.title !== undefined ? { title: entry.title } : {}),
+          ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}),
+          ...(entry.parentSessionId !== undefined ? { parentId: entry.parentSessionId } : {}),
+          ...(entry.origin !== undefined ? { origin: entry.origin } : {}),
+          ...(entry.agentPreset !== undefined ? { agentPreset: entry.agentPreset } : {}),
+        }
       }
+      this.projectedItems = items
+      this.projectedIds = ids
+      this.projectedById = byId
     }
+    const ids = this.projectedIds
+    let byId = this.projectedById
     if (current !== undefined && currentAddress !== undefined) {
+      byId = { ...byId }
       const seen = new Set<SessionId>()
       let address: SubagentAddress | undefined = currentAddress
       while (address !== undefined && !seen.has(address.childSessionId)) {

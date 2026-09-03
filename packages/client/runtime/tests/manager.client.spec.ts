@@ -5,7 +5,8 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
-import { SessionManager } from '../src/client/sessions/manager.ts'
+import { reconcileSessionListEntries, SessionManager } from '../src/client/sessions/manager.ts'
+import type { SessionListEntry } from '../src/client/sessions/lineage.ts'
 import { FakeApiClient, deferred, err, fakeRemote, ok } from './fake-api.client.ts'
 import { entries, ev, plainTurn } from './event-script.client.ts'
 
@@ -857,6 +858,63 @@ describe('remaining branches', () => {
     // Same-order same-entries snapshot reuses the items array.
     manager.handleHostEnvelope({ rpcId: 'h2' as never, payload: { type: 'host/agent-error', sessionId: S1, message: 'x' } })
     expect(manager.getListSnapshot().items).toBe(after.items)
+  })
+
+  it('does not rebuild 2,500 list rows for selection-only snapshots', async () => {
+    const api = new FakeApiClient()
+    const rows = Array.from({ length: 2_500 }, (_, index) => summary(`perf-${index}` as SessionId, {
+      updatedAt: index,
+    }))
+    api.onList = () => Promise.resolve(ok({ items: rows as never[] }))
+    const manager = new SessionManager(api, fakeRemote())
+    await manager.refreshList()
+    const before = manager.getListSnapshot().items
+    const internals = manager as unknown as { buildListItems: () => void }
+    const rebuild = vi.spyOn(internals, 'buildListItems')
+
+    manager.select(rows[1_250]!.sessionId)
+    expect(manager.getListSnapshot().items).toBe(before)
+    manager.clearSelection()
+    expect(manager.getListSnapshot().items).toBe(before)
+    expect(rebuild).not.toHaveBeenCalled()
+
+    manager.handleHostEnvelope({
+      rpcId: 'status' as never,
+      payload: { type: 'host/session-status', sessionId: rows[1_250]!.sessionId, running: true },
+    })
+    manager.getListSnapshot()
+    expect(rebuild).toHaveBeenCalledOnce()
+  })
+
+  it('prunes a 2,500-row identity cache with linearly bounded row-id reads', () => {
+    let sessionIdReads = 0
+    const fresh = Array.from({ length: 2_500 }, (_, index) => {
+      const id = `linear-${index}` as SessionId
+      return {
+        get sessionId() {
+          sessionIdReads++
+          return id
+        },
+        updatedAt: index,
+        running: false,
+        blank: false,
+        completed: false,
+        depth: 0,
+      } satisfies SessionListEntry
+    })
+    const cache = new Map<SessionId, SessionListEntry>()
+    for (let index = 0; index < 2_500; index++) {
+      const id = `stale-${index}` as SessionId
+      cache.set(id, {
+        sessionId: id, updatedAt: index, running: false, blank: false, completed: false, depth: 0,
+      })
+    }
+
+    const items = reconcileSessionListEntries(fresh, cache, [])
+
+    expect(items).toHaveLength(2_500)
+    expect(cache).toHaveLength(2_500)
+    expect(sessionIdReads).toBeLessThanOrEqual(2_500 * 3)
   })
 
   it('carries parentSessionId from host/session-added into the lineage row', () => {

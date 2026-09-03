@@ -64,6 +64,8 @@ export const sessionSummarySchema = z.object({
 /** session.list request payload (cursor is a reserved seat, unimplemented in v1). */
 export const sessionListRequestSchema = z.object({
   cursor: z.string().optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
+  includeProjections: z.boolean().optional(),
 }) satisfies z.ZodType<Wire<RequestPayload<'session.list'>>>
 
 /** session.list response value. */

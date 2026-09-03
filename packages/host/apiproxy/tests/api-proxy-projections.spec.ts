@@ -251,6 +251,21 @@ describe('session.list projections column', () => {
     expect(row?.projections?.asOfSeq).toBe(session.seq - 1)
   })
 
+  it('bounds activity-ordered metadata rows and omits projection blocks on request', async () => {
+    const { ctx, session } = await harness(true)
+    ctx.sessionProjections.register(lastUserUnit())
+    session.append('turn/start', { turn: 1 })
+    seedMessages(session, 1)
+    const response = await api(ctx).sessions.list(request({ limit: 1, includeProjections: false }))
+    if (!response.result.ok) throw new Error('unreachable')
+    expect(response.result.value.items).toHaveLength(1)
+    expect(response.result.value.items[0]).toMatchObject({
+      sessionId: session.id,
+      blank: false,
+    })
+    expect('projections' in response.result.value.items[0]!).toBe(false)
+  })
+
   it('omits the column entirely when no registry is mounted', async () => {
     const { ctx, session } = await harness(false)
     seedMessages(session, 1)
@@ -279,11 +294,18 @@ describe('session.list projections column', () => {
           ? { asOfSeq: 7, values: { 'test/last-user': { text: 'cached' } } }
           : undefined),
     } as never)
-    const response = await api(ctx).sessions.list(request({}))
+    const gateway = api(ctx)
+    const response = await gateway.sessions.list(request({}))
     if (!response.result.ok) throw new Error('unreachable')
     const row = response.result.value.items.find(item => item.sessionId === coldId)
     expect(row?.running).toBe(false)
     expect(row?.projections).toEqual({ asOfSeq: 7, values: { 'test/last-user': { text: 'cached' } } })
+
+    const metadataOnly = await gateway.sessions.list(request({ includeProjections: false }))
+    if (!metadataOnly.result.ok) throw new Error('unreachable')
+    const metadataRow = metadataOnly.result.value.items.find(item => item.sessionId === coldId)
+    expect(metadataRow).toBeDefined()
+    expect(metadataRow !== undefined && 'projections' in metadataRow).toBe(false)
   })
 
   it('cold rows without a cache plugin (or without a stored row) just lack the column', async () => {

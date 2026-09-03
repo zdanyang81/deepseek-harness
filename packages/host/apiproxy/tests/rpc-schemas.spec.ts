@@ -160,6 +160,12 @@ describe('sessions domain schemas', () => {
   it('validates the per-method request/value pairs', () => {
     expect(sessionListRequestSchema.parse({})).toEqual({})
     expect(sessionListRequestSchema.parse({ cursor: 'c' }).cursor).toBe('c')
+    expect(sessionListRequestSchema.parse({ limit: 50, includeProjections: false })).toEqual({
+      limit: 50,
+      includeProjections: false,
+    })
+    expect(() => sessionListRequestSchema.parse({ limit: 0 })).toThrow()
+    expect(() => sessionListRequestSchema.parse({ limit: 1001 })).toThrow()
     expect(sessionListValueSchema.parse({ items: [] }).items).toEqual([])
     expect(sessionSearchRequestSchema.parse({ query: '  exact phrase  ' })).toEqual({ query: 'exact phrase' })
     expect(() => sessionSearchRequestSchema.parse({ query: '   ' })).toThrow()

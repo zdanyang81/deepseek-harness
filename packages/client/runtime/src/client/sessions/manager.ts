@@ -156,6 +156,8 @@ export class SessionManager {
    *  must be recovered by value or every SessionListItem memo misses on every refresh. */
   private entryCache = new Map<SessionId, SessionListEntry>()
   private itemsCache: readonly SessionListEntry[] = []
+  /** True only when summary, projection, pending-interaction, or completion data can change list rows. */
+  private listItemsDirty = true
   private readonly notifier = new Notifier(() => {
     this.listSnapshotCache = this.buildListSnapshot()
   })
@@ -183,8 +185,9 @@ export class SessionManager {
    * @param sessionId - listed or catalog-addressed Session id.
    */
   select(sessionId: SessionId): void {
+    this.notifier.ensureFresh()
     const address = this.navigationAddress(sessionId)
-    if (!this.summaries.some(summary => summary.sessionId === sessionId) && address === undefined) {
+    if (!this.entryCache.has(sessionId) && address === undefined) {
       throw new Error(`sessions.select: unknown session ${sessionId}`)
     }
     if (address !== undefined) this.addresses.set(sessionId, address)
@@ -196,7 +199,7 @@ export class SessionManager {
     )
     this.selected = sessionId
     // Looking at the session consumes its completion reminder (dot clears).
-    this.completedNotifications.delete(sessionId)
+    if (this.completedNotifications.delete(sessionId)) this.listItemsDirty = true
     void this.refreshSubagents(sessionId)
     this.notifier.notifyNow()
   }
@@ -214,7 +217,7 @@ export class SessionManager {
     this.addresses.set(address.childSessionId, address)
     this.sessions.get(address.childSessionId)?.configureSubagent(address, catalog?.parentAvailable ?? false)
     this.selected = address.childSessionId
-    this.completedNotifications.delete(address.childSessionId)
+    if (this.completedNotifications.delete(address.childSessionId)) this.listItemsDirty = true
     void this.refreshSubagents(address.childSessionId)
     this.notifier.notifyNow()
   }
@@ -286,7 +289,8 @@ export class SessionManager {
       }
       // Sync the running and blank bits from the list snapshot into the new
       // instance (consistency when the list precedes open).
-      const summary = this.summaries.find(s => s.sessionId === sessionId)
+      this.notifier.ensureFresh()
+      const summary = this.entryCache.get(sessionId)
       if (summary !== undefined) {
         session.handleBlank(summary.blank)
         session.handleRunning(summary.running)
@@ -334,7 +338,10 @@ export class SessionManager {
       store = new ProjectionValueStore()
       // List rows project off store keys (title); any-key changes re-enter
       // the manager's own batched rebuild channel.
-      store.subscribeAny(() => { this.notifier.markDirty() })
+      store.subscribeAny(() => {
+        this.listItemsDirty = true
+        this.notifier.markDirty()
+      })
       this.projectionStores.set(sessionId, store)
     }
     return store
@@ -466,6 +473,7 @@ export class SessionManager {
             this.syncCompletedNotifications()
           }
           this.summaries = summaries
+          this.listItemsDirty = true
           this.listState = 'idle'
           this.listPhase = 'ready'
           // Covers the empty-mutations pull (a plain baseline carries no edge).
@@ -627,6 +635,7 @@ export class SessionManager {
   private recordMutation(mutation: SessionListMutation): void {
     this.listMutations?.push(mutation)
     this.summaries = applyMutation(this.summaries, mutation)
+    this.listItemsDirty = true
     // Eager edge reconciliation — a snapshot-build-time pass would miss consecutive status frames.
     this.syncCompletedNotifications()
     this.notifier.markDirty()
@@ -661,6 +670,7 @@ export class SessionManager {
     }
     if (interactions.get(key) === status) return
     interactions.set(key, status)
+    this.listItemsDirty = true
     this.notifier.markDirty()
   }
 
@@ -669,6 +679,7 @@ export class SessionManager {
     const interactions = this.pendingInteractions.get(sessionId)
     if (interactions === undefined || !interactions.delete(key)) return
     if (interactions.size === 0) this.pendingInteractions.delete(sessionId)
+    this.listItemsDirty = true
     this.notifier.markDirty()
   }
 
@@ -699,6 +710,7 @@ export class SessionManager {
       // synchronous markDirty keeps the list snapshot same-tick fresh (the
       // store's own any-key channel is microtask-batched).
       this.projectionStore(frame.sessionId).apply(frame.key, frame.value, frame.seq)
+      this.listItemsDirty = true
       this.notifier.markDirty()
       return
     }
@@ -715,6 +727,7 @@ export class SessionManager {
       // Rows past the host's durable baseline rode state a restart lost; drop
       // them so last-wins cannot pin a phantom value over recomputed truth.
       this.projectionStores.get(frame.sessionId)?.truncate(frame.lastSeq)
+      this.listItemsDirty = true
       // Same re-baseline reasoning as the queue below: this generation sends a
       // task baseline only when the set is non-empty, so a mirror kept from the
       // previous generation would survive as a phantom list.
@@ -887,6 +900,7 @@ export class SessionManager {
   handleDisconnected(): void {
     if (this.pendingInteractions.size > 0) {
       this.pendingInteractions.clear()
+      this.listItemsDirty = true
       this.notifier.markDirty()
     }
     for (const [sessionId, buffer] of [...this.pendingBuffers]) {
@@ -1017,7 +1031,8 @@ export class SessionManager {
     }
   }
 
-  private buildListSnapshot(): SessionListSnapshot {
+  /** Rebuild row data only when a list-facing fact changed. */
+  private buildListItems(): void {
     const merged: TitledSessionSummary[] = this.summaries.map((summary) => {
       // List rows read the generic 'title' projection key (host-computed unit
       // value; there is no dedicated title frame).
@@ -1039,28 +1054,17 @@ export class SessionManager {
       if (status !== undefined) pendingInteractions.set(sessionId, status)
     }
     const fresh = flattenLineage(merged, pendingInteractions, this.completedNotifications)
-    const items = fresh.map((entry) => {
-      const prev = this.entryCache.get(entry.sessionId)
-      if (
-        prev !== undefined && prev.updatedAt === entry.updatedAt && prev.running === entry.running
-        && prev.blank === entry.blank && prev.agentPreset === entry.agentPreset
-        && prev.parentSessionId === entry.parentSessionId && prev.cwd === entry.cwd
-        && prev.origin === entry.origin && prev.title === entry.title && prev.depth === entry.depth
-        && prev.pendingInteraction === entry.pendingInteraction
-        && prev.projectionValues === entry.projectionValues
-        && prev.completed === entry.completed
-      ) return prev
-      this.entryCache.set(entry.sessionId, entry)
-      return entry
-    })
-    for (const id of this.entryCache.keys()) {
-      if (!items.some(e => e.sessionId === id)) this.entryCache.delete(id)
+    this.itemsCache = reconcileSessionListEntries(fresh, this.entryCache, this.itemsCache)
+  }
+
+  private buildListSnapshot(): SessionListSnapshot {
+    if (this.listItemsDirty) {
+      this.listItemsDirty = false
+      this.buildListItems()
     }
-    const sameOrder = items.length === this.itemsCache.length && items.every((e, i) => e === this.itemsCache[i])
-    if (!sameOrder) this.itemsCache = items
     const selected = this.selected
     const current = selected !== undefined
-      && (items.some(item => item.sessionId === selected) || this.addresses.has(selected))
+      && (this.entryCache.has(selected) || this.addresses.has(selected))
       ? selected
       : undefined
     return {
@@ -1074,6 +1078,42 @@ export class SessionManager {
       currentAddress: current === undefined ? undefined : this.addresses.get(current),
     }
   }
+}
+
+/**
+ * Restore stable row and array identities while pruning removed cache entries in linear time.
+ * @param fresh - newly flattened rows in display order.
+ * @param entryCache - manager-owned row identity cache.
+ * @param previousItems - previously published row array.
+ * @returns the previous array when every row identity and position is unchanged, otherwise the reconciled rows.
+ */
+export function reconcileSessionListEntries(
+  fresh: readonly SessionListEntry[],
+  entryCache: Map<SessionId, SessionListEntry>,
+  previousItems: readonly SessionListEntry[],
+): readonly SessionListEntry[] {
+  const liveIds = new Set<SessionId>()
+  const items = fresh.map((entry) => {
+    liveIds.add(entry.sessionId)
+    const prev = entryCache.get(entry.sessionId)
+    if (
+      prev !== undefined && prev.updatedAt === entry.updatedAt && prev.running === entry.running
+      && prev.blank === entry.blank && prev.agentPreset === entry.agentPreset
+      && prev.parentSessionId === entry.parentSessionId && prev.cwd === entry.cwd
+      && prev.origin === entry.origin && prev.title === entry.title && prev.depth === entry.depth
+      && prev.pendingInteraction === entry.pendingInteraction
+      && prev.projectionValues === entry.projectionValues
+      && prev.completed === entry.completed
+    ) return prev
+    entryCache.set(entry.sessionId, entry)
+    return entry
+  })
+  for (const id of entryCache.keys()) {
+    if (!liveIds.has(id)) entryCache.delete(id)
+  }
+  const sameOrder = items.length === previousItems.length
+    && items.every((entry, index) => entry === previousItems[index])
+  return sameOrder ? previousItems : items
 }
 
 /** Apply one list mutation without deriving display order. */

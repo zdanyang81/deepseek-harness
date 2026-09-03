@@ -1663,14 +1663,17 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
    * Attached sessions come from memory; servable cold sessions merge from
    * persistence, and the final order is newest-first.
    */
-  async function listVisibleSessionSummaries(signal?: AbortSignal): Promise<SessionSummary[]> {
+  async function listVisibleSessionSummaries(
+    signal?: AbortSignal,
+    includeProjections = true,
+  ): Promise<SessionSummary[]> {
     signal?.throwIfAborted()
     const summarizeAttached = (session: Session): SessionSummary => {
       const agent = ctx.agents.get(session.id)
       const projections = listProjectionsFor(ctx, session.header, session)
       return {
         ...summarize(session, agent?.status === 'running'),
-        ...projections === undefined ? {} : { projections },
+        ...!includeProjections || projections === undefined ? {} : { projections },
       }
     }
     const items = ctx.sessions.list().map(summarizeAttached)
@@ -1701,7 +1704,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             if (attachedSession !== undefined) return summarizeAttached(attachedSession)
             return {
               ...summary,
-              ...projections === undefined ? {} : { projections },
+              ...!includeProjections || projections === undefined ? {} : { projections },
             }
           }),
         )
@@ -1942,7 +1945,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       // Logs without a cwd are not served; every session records its project
       // at create time.
       async list(request) {
-        return ok(request, { items: await listVisibleSessionSummaries() })
+        const items = await listVisibleSessionSummaries(undefined, request.payload.includeProjections !== false)
+        return ok(request, {
+          items: request.payload.limit === undefined ? items : items.slice(0, request.payload.limit),
+        })
       },
 
       async search(request, signal) {
