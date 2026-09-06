@@ -9,7 +9,7 @@
  * menu in between; the flow and its error dialog live in WorkspacePicker
  * (same package — direct composition, no slot between them).
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type UIEvent, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   Button, IconCloseFill14, IconPersonalizationOutline16,
@@ -37,6 +37,20 @@ const SEARCH_DEBOUNCE_MS = 250
 const SEARCH_QUERY_MAX_CODE_UNITS = 500
 /** Session rows visible per Workspace before the local overflow control. */
 const COLLAPSED_SESSION_LIMIT = 5
+/** Distance from the list end that admits one user-driven catalog page. */
+const AUTO_LOAD_MORE_THRESHOLD_PX = 96
+/** Bounded initial backfill for pages whose visible rows do not fill the list. */
+const UNDERFILL_AUTO_PAGE_LIMIT = 3
+
+type PageableSessionListState = SessionListState & {
+  readonly hasMore?: boolean
+  readonly loadingMore?: boolean
+}
+
+type UnderfillRequest = {
+  readonly beforeCount: number
+  readonly status: 'pending' | 'resolved' | 'rejected'
+}
 
 /** Keep controlled input and RPC payload inside the session.search wire contract. */
 function sanitizeSearchQuery(value: string): string {
@@ -74,6 +88,106 @@ function useNativeDragAcceptance(active: boolean): void {
       document.removeEventListener('drop', acceptDrop)
     }
   }, [active])
+}
+
+/** Whether the list is inside the one-page automatic-load threshold. */
+function nearListEnd(list: HTMLDivElement): boolean {
+  return list.scrollHeight - list.scrollTop - list.clientHeight <= AUTO_LOAD_MORE_THRESHOLD_PX
+}
+
+/**
+ * Page the catalog from its real scroll container. A short first catalog may
+ * backfill three progressing pages; normal scrolling admits one page per new
+ * downward intent, and failures wait for the button or another user gesture.
+ */
+function useSessionCatalogAutoLoad({
+  hasMore,
+  loadingMore,
+  catalogCount,
+  loadMoreSessions,
+}: {
+  hasMore: boolean
+  loadingMore: boolean
+  catalogCount: number
+  loadMoreSessions: () => Promise<void>
+}) {
+  const listRef = useRef<HTMLDivElement>(null)
+  const inFlight = useRef(false)
+  const scrollLatched = useRef(false)
+  const underfillAttempts = useRef(0)
+  const underfillStopped = useRef(false)
+  const previousCatalogCount = useRef(catalogCount)
+  const previousScrollTop = useRef(0)
+  const [underfillRequest, setUnderfillRequest] = useState<UnderfillRequest | null>(null)
+
+  const startAutoLoad = useCallback((kind: 'scroll' | 'underfill', newDownwardIntent = false): void => {
+    if (!hasMore || loadingMore || inFlight.current) return
+    if (kind === 'scroll') {
+      if (scrollLatched.current && !newDownwardIntent) return
+      if (newDownwardIntent) scrollLatched.current = false
+    } else {
+      if (underfillStopped.current || underfillAttempts.current >= UNDERFILL_AUTO_PAGE_LIMIT) return
+      underfillAttempts.current += 1
+      setUnderfillRequest({ beforeCount: catalogCount, status: 'pending' })
+    }
+    scrollLatched.current = true
+    inFlight.current = true
+    let status: UnderfillRequest['status'] = 'resolved'
+    void Promise.resolve()
+      .then(loadMoreSessions)
+      .catch((reason: unknown) => {
+        status = 'rejected'
+        console.warn('automatic session catalog load rejected:', reason)
+      })
+      .finally(() => {
+        inFlight.current = false
+        if (kind === 'underfill') {
+          setUnderfillRequest(current => current === null ? current : { ...current, status })
+        }
+      })
+  }, [catalogCount, hasMore, loadMoreSessions, loadingMore])
+
+  useEffect(() => {
+    const list = listRef.current
+    if (list === null) return
+    const contentChanged = catalogCount !== previousCatalogCount.current
+    previousCatalogCount.current = catalogCount
+    if (contentChanged && !nearListEnd(list)) scrollLatched.current = false
+    if (underfillStopped.current || list.clientHeight <= 0) return
+    if (!hasMore) return
+    if (list.scrollHeight > list.clientHeight) {
+      underfillStopped.current = true
+      return
+    }
+    if (underfillRequest?.status === 'pending' || loadingMore || inFlight.current) return
+    if (underfillRequest?.status === 'rejected'
+      || (underfillRequest?.status === 'resolved'
+        && catalogCount <= underfillRequest.beforeCount)
+      || underfillAttempts.current >= UNDERFILL_AUTO_PAGE_LIMIT) {
+      underfillStopped.current = true
+      return
+    }
+    startAutoLoad('underfill')
+  }, [catalogCount, hasMore, loadingMore, startAutoLoad, underfillRequest])
+
+  const onScroll = (event: UIEvent<HTMLDivElement>): void => {
+    const list = event.currentTarget
+    const movingDown = list.scrollTop > previousScrollTop.current
+    previousScrollTop.current = list.scrollTop
+    if (!nearListEnd(list)) {
+      scrollLatched.current = false
+      return
+    }
+    if (!movingDown) return
+    startAutoLoad('scroll', scrollLatched.current)
+  }
+
+  const onWheel = (event: WheelEvent<HTMLDivElement>): void => {
+    if (event.deltaY <= 0 || !nearListEnd(event.currentTarget)) return
+    startAutoLoad('scroll', scrollLatched.current)
+  }
+
+  return { listRef, onScroll, onWheel }
 }
 
 /** Reconcile a stored view order with the Workspace's current session account. */
@@ -122,7 +236,7 @@ function nextSessionOrderAccount({
       .filter((id) => {
         const session = list.byId[id]
         return session !== undefined
-          && (previousUpdatedAt[id] === undefined || session.updatedAt > previousUpdatedAt[id])
+          && (previousUpdatedAt[id] !== undefined && session.updatedAt > previousUpdatedAt[id])
       })
       .sort((a, b) => compareSessionRecency(a, b, list.byId))
     if (promoted.length > 0) {
@@ -215,7 +329,7 @@ function workspaceGroupHalf(e: { clientY: number; currentTarget: HTMLElement }):
 
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
-  'useSessions' | 'startSession' | 'open' | 'forkSession'
+  'useSessions' | 'startSession' | 'open' | 'loadMoreSessions' | 'forkSession'
   | 'insertWorkspaceBefore' | 'insertSessionBefore' | 't'
 > & {
   /** Host account home for POSIX hover-path abbreviation. */
@@ -249,13 +363,13 @@ type SessionTreeProps = Pick<
 
 /** The scrolling session tree; unmounting drops the sessions subscription and expand-all state. */
 function SessionTree({
-  useSessions, startSession, open, forkSession, workspaces, archivedSessionIds,
+  useSessions, startSession, open, loadMoreSessions, forkSession, workspaces, archivedSessionIds,
   onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive,
   insertWorkspaceBefore, insertSessionBefore, orderBy,
   groupExpansion, setGroupExpanded,
   sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, home, t,
 }: SessionTreeProps) {
-  const list = useSessions(s => s)
+  const list = useSessions(s => s) as PageableSessionListState
   const current = list.current
   const [expandedSessionGroups, setExpandedSessionGroups] = useState<string[]>([])
   // Transient drag marker state; the selected mode owns the resulting order.
@@ -329,6 +443,12 @@ function SessionTree({
     }),
     [list, orderedWorkspaces, archivedSessionIds, expandedGroups, sessionOrderByAccount],
   )
+  const autoLoad = useSessionCatalogAutoLoad({
+    hasMore: list.hasMore === true,
+    loadingMore: list.loadingMore === true,
+    catalogCount: list.ids.length,
+    loadMoreSessions,
+  })
   const now = Date.now()
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState['over']>): void => {
     if (sessionDropCommitted.current) return
@@ -386,9 +506,12 @@ function SessionTree({
     <div className={clsx(css.treeBody, css.wide)}>
       {workspaceDropAtListStart && <span className={css.listTopDropIndicator} aria-hidden="true" />}
       <div
+        ref={autoLoad.listRef}
         className={clsx(css.list, workspaceDropAtListStart && css.listTopDropActive)}
         role="tree"
         aria-label={t('section.sessions')}
+        onScroll={autoLoad.onScroll}
+        onWheel={autoLoad.onWheel}
       >
         {groups.length === 0 && (
           <div className={css.empty}>{t('empty.none')}</div>
@@ -539,6 +662,16 @@ function SessionTree({
             </div>
           )
         })}
+        {list.hasMore === true && (
+          <button
+            type="button"
+            className={css.sessionOverflowButton}
+            disabled={list.loadingMore === true}
+            onClick={() => { void loadMoreSessions() }}
+          >
+            {list.loadingMore === true ? t('sessions.loadingMore') : t('sessions.loadMore')}
+          </button>
+        )}
       </div>
       <span className={css.fade} />
     </div>
@@ -547,12 +680,13 @@ function SessionTree({
 
 /** The flat "In one list" body: every session is one draggable top-level row. */
 function FlatList({
-  useSessions, open, forkSession, onSessionRename, onSessionArchive, archivedSessionIds,
+  useSessions, open, loadMoreSessions, forkSession, onSessionRename, onSessionArchive, archivedSessionIds,
   orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t,
 }: Pick<
   SessionTreeProps,
   | 'useSessions'
   | 'open'
+  | 'loadMoreSessions'
   | 'forkSession'
   | 'onSessionRename'
   | 'onSessionArchive'
@@ -564,7 +698,7 @@ function FlatList({
   | 'setSessionOrder'
   | 't'
 >) {
-  const list = useSessions(s => s)
+  const list = useSessions(s => s) as PageableSessionListState
   const baseRows = useMemo(
     () => deriveFlat(list, archivedSessionIds),
     [list, archivedSessionIds],
@@ -597,6 +731,12 @@ function FlatList({
         return row === undefined ? [] : [row]
       })
   }, [baseRows, sessionOrderByAccount, sessionIds])
+  const autoLoad = useSessionCatalogAutoLoad({
+    hasMore: list.hasMore === true,
+    loadingMore: list.loadingMore === true,
+    catalogCount: list.ids.length,
+    loadMoreSessions,
+  })
   const [drag, setDrag] = useState<DragState | null>(null)
   const dropCommitted = useRef(false)
   useNativeDragAcceptance(drag !== null)
@@ -619,7 +759,14 @@ function FlatList({
   const now = Date.now()
   return (
     <div className={clsx(css.treeBody, css.wide)}>
-      <div className={clsx(css.list, css.flatList)} role="tree" aria-label={t('section.sessions')}>
+      <div
+        ref={autoLoad.listRef}
+        className={clsx(css.list, css.flatList)}
+        role="tree"
+        aria-label={t('section.sessions')}
+        onScroll={autoLoad.onScroll}
+        onWheel={autoLoad.onWheel}
+      >
         {rows.length === 0 && (
           <div className={css.empty}>{t('empty.none')}</div>
         )}
@@ -659,6 +806,16 @@ function FlatList({
             />
           )
         })}
+        {list.hasMore === true && (
+          <button
+            type="button"
+            className={css.sessionOverflowButton}
+            disabled={list.loadingMore === true}
+            onClick={() => { void loadMoreSessions() }}
+          >
+            {list.loadingMore === true ? t('sessions.loadingMore') : t('sessions.loadMore')}
+          </button>
+        )}
       </div>
       <span className={css.fade} />
     </div>
@@ -750,6 +907,7 @@ export function WorkspaceBrowser({
   actions,
   startSession,
   open,
+  loadMoreSessions,
   renameSession,
   forkSession,
   renameWorkspace,
@@ -1157,7 +1315,7 @@ export function WorkspaceBrowser({
           : groupBy === 'flat'
             ? (
               <FlatList
-                useSessions={useSessions} open={open} forkSession={forkSession}
+                useSessions={useSessions} open={open} loadMoreSessions={loadMoreSessions} forkSession={forkSession}
                 onSessionRename={onSessionRename} onSessionArchive={onSessionArchive}
                 archivedSessionIds={archivedSessionIds}
                 orderBy={orderBy}
@@ -1174,6 +1332,7 @@ export function WorkspaceBrowser({
                 onSessionRename={onSessionRename}
                 onSessionArchive={onSessionArchive}
                 forkSession={forkSession}
+                loadMoreSessions={loadMoreSessions}
                 workspaces={workspaces}
                 groupExpansion={groupExpansion}
                 setGroupExpanded={actions.setGroupExpanded}

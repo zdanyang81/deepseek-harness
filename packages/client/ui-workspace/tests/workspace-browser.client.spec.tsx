@@ -54,6 +54,29 @@ function fireDrag(row: HTMLElement, kind: 'dragOver' | 'drop', clientY: number):
   fireEvent(row, event)
 }
 
+/** Supply the list geometry that jsdom does not calculate. */
+function setScrollMetrics(list: HTMLElement, metrics: {
+  clientHeight: number
+  scrollHeight: number
+  scrollTop: number
+}): void {
+  for (const [key, value] of Object.entries(metrics)) {
+    Object.defineProperty(list, key, { configurable: true, writable: true, value })
+  }
+}
+
+function deferredVoid(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: (() => void) | undefined
+  const promise = new Promise<void>((done) => { resolve = done })
+  return {
+    promise,
+    resolve: () => {
+      if (resolve === undefined) throw new Error('deferred promise is not initialized')
+      resolve()
+    },
+  }
+}
+
 function dragData(): Pick<DataTransfer, 'effectAllowed' | 'dropEffect' | 'setData'> {
   return { effectAllowed: 'uninitialized', dropEffect: 'none', setData: vi.fn() }
 }
@@ -69,6 +92,7 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
     actions: store.actions,
     startSession: vi.fn(),
     open: vi.fn(),
+    loadMoreSessions: vi.fn(async () => {}),
     searchSessions: vi.fn(async () => ({ items: [], hasMore: false })),
     searchResultLimit: 20,
     renameSession: vi.fn(async () => {}),
@@ -115,6 +139,232 @@ describe('WorkspaceBrowser', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('loads one catalog page per grouped or flat button click and reflects busy state', () => {
+    const loadMoreSessions = vi.fn(async () => {})
+    const items = [summary('alpha-s', 1)]
+    const ready = sessionState(items, { hasMore: true, loadingMore: false })
+    const b = mount({
+      useSessions: hook(ready),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
+      loadMoreSessions,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '加载更多会话' }))
+    expect(loadMoreSessions).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '单列表' }))
+    fireEvent.click(screen.getByRole('button', { name: '加载更多会话' }))
+    expect(loadMoreSessions).toHaveBeenCalledTimes(2)
+
+    rerender(b, {
+      useSessions: hook(sessionState(items, { hasMore: true, loadingMore: true })),
+    })
+    const busy = screen.getByRole<HTMLButtonElement>('button', { name: '正在加载更多会话…' })
+    expect(busy.disabled).toBe(true)
+
+    rerender(b, {
+      useSessions: hook(sessionState(items, { hasMore: false, loadingMore: false })),
+    })
+    expect(screen.queryByRole('button', { name: '加载更多会话' })).toBeNull()
+  })
+
+  it('loads once near the real list end and unlocks after added rows move it away', async () => {
+    const first = deferredVoid()
+    const loadMoreSessions = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValue(undefined)
+    const initial = [summary('alpha-s', 2)]
+    const b = mount({
+      useSessions: hook(sessionState(initial, { hasMore: true, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
+      loadMoreSessions,
+    })
+    const list = screen.getByRole('tree', { name: '会话' })
+    setScrollMetrics(list, { clientHeight: 200, scrollHeight: 600, scrollTop: 0 })
+
+    fireEvent.mouseMove(list, { clientY: 199 })
+    expect(loadMoreSessions).not.toHaveBeenCalled()
+    list.scrollTop = 310
+    fireEvent.scroll(list)
+    await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(1) })
+    list.scrollTop = 320
+    fireEvent.scroll(list)
+    expect(loadMoreSessions).toHaveBeenCalledTimes(1)
+
+    await act(async () => { first.resolve(); await first.promise })
+    setScrollMetrics(list, { clientHeight: 200, scrollHeight: 1_000, scrollTop: 320 })
+    const next = [...initial, summary('older-s', 1)]
+    rerender(b, {
+      useSessions: hook(sessionState(next, { hasMore: true, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s', 'older-s'])])),
+    })
+    list.scrollTop = 720
+    fireEvent.scroll(list)
+    await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(2) })
+  })
+
+  it('requires a new downward wheel intent when a successful page remains near the end', async () => {
+    const first = deferredVoid()
+    const loadMoreSessions = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValue(undefined)
+    const initial = [summary('alpha-s', 2)]
+    const b = mount({
+      useSessions: hook(sessionState(initial, { hasMore: true, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
+      loadMoreSessions,
+    })
+    const list = screen.getByRole('tree', { name: '会话' })
+    setScrollMetrics(list, { clientHeight: 200, scrollHeight: 600, scrollTop: 310 })
+    fireEvent.scroll(list)
+    await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(1) })
+
+    await act(async () => { first.resolve(); await first.promise })
+    setScrollMetrics(list, { clientHeight: 200, scrollHeight: 606, scrollTop: 310 })
+    const next = [...initial, summary('older-s', 1)]
+    rerender(b, {
+      useSessions: hook(sessionState(next, { hasMore: true, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s', 'older-s'])])),
+    })
+    fireEvent.scroll(list)
+    expect(loadMoreSessions).toHaveBeenCalledTimes(1)
+    fireEvent.wheel(list, { deltaY: 20 })
+    await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(2) })
+  })
+
+  it('bounds an all-hidden underfill batch at three progressing pages and leaves the button', async () => {
+    const requests = [deferredVoid(), deferredVoid(), deferredVoid()]
+    let requestIndex = 0
+    const loadMoreSessions = vi.fn(() => requests[requestIndex++]?.promise ?? Promise.resolve())
+    const pages = [1, 2, 3, 4].map(count => Array.from(
+      { length: count },
+      (_, index) => summary(`hidden-${index + 1}`, count - index),
+    ))
+    const b = mount({
+      useSessions: hook(sessionState(pages[0], { hasMore: false, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([], pages[0].map(item => item.id))),
+      loadMoreSessions,
+    })
+    const list = screen.getByRole('tree', { name: '会话' })
+    setScrollMetrics(list, { clientHeight: 400, scrollHeight: 100, scrollTop: 0 })
+    rerender(b, {
+      useSessions: hook(sessionState(pages[0], { hasMore: true, loadingMore: false })),
+    })
+
+    for (let page = 1; page <= 3; page += 1) {
+      await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(page) })
+      rerender(b, {
+        useSessions: hook(sessionState(pages[page], { hasMore: true, loadingMore: false })),
+        useWorkspaces: hook(workspaceState([], pages[page].map(item => item.id))),
+      })
+      await act(async () => {
+        requests[page - 1]?.resolve()
+        await requests[page - 1]?.promise
+      })
+    }
+    await act(async () => { await Promise.resolve() })
+    expect(loadMoreSessions).toHaveBeenCalledTimes(3)
+    fireEvent.click(screen.getByRole('button', { name: '加载更多会话' }))
+    expect(loadMoreSessions).toHaveBeenCalledTimes(4)
+  })
+
+  it('stops an underfill batch when a resolved request makes no catalog progress', async () => {
+    const loadMoreSessions = vi.fn(async () => {})
+    const items = [summary('alpha-s', 1)]
+    const b = mount({
+      useSessions: hook(sessionState(items, { hasMore: false, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
+      loadMoreSessions,
+    })
+    const list = screen.getByRole('tree', { name: '会话' })
+    setScrollMetrics(list, { clientHeight: 400, scrollHeight: 100, scrollTop: 0 })
+    rerender(b, {
+      useSessions: hook(sessionState(items, { hasMore: true, loadingMore: false })),
+    })
+    await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(1) })
+    await act(async () => { await Promise.resolve() })
+    rerender(b, {
+      useSessions: hook(sessionState(items, { hasMore: true, loadingMore: true })),
+    })
+    rerender(b, {
+      useSessions: hook(sessionState(items, { hasMore: true, loadingMore: false })),
+    })
+    expect(loadMoreSessions).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: '加载更多会话' }))
+    expect(loadMoreSessions).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops an underfill batch after rejection and leaves manual retry available', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const loadMoreSessions = vi.fn()
+        .mockRejectedValueOnce(new Error('page unavailable'))
+        .mockResolvedValue(undefined)
+      const items = [summary('alpha-s', 1)]
+      const b = mount({
+        useSessions: hook(sessionState(items, { hasMore: false, loadingMore: false })),
+        useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
+        loadMoreSessions,
+      })
+      const list = screen.getByRole('tree', { name: '会话' })
+      setScrollMetrics(list, { clientHeight: 400, scrollHeight: 100, scrollTop: 0 })
+      rerender(b, {
+        useSessions: hook(sessionState(items, { hasMore: true, loadingMore: false })),
+      })
+      await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(1) })
+      await waitFor(() => {
+        expect(warning).toHaveBeenCalledWith('automatic session catalog load rejected:', expect.any(Error))
+      })
+      rerender(b, {
+        useSessions: hook(sessionState(items, { hasMore: true, loadingMore: true })),
+      })
+      rerender(b, {
+        useSessions: hook(sessionState(items, { hasMore: true, loadingMore: false })),
+      })
+      expect(loadMoreSessions).toHaveBeenCalledTimes(1)
+      fireEvent.click(screen.getByRole('button', { name: '加载更多会话' }))
+      expect(loadMoreSessions).toHaveBeenCalledTimes(2)
+    } finally {
+      warning.mockRestore()
+    }
+  })
+
+  it('does not load the catalog from mouse movement or search-result scrolling', () => {
+    const loadMoreSessions = vi.fn(async () => {})
+    mount({
+      useSessions: hook(sessionState([summary('alpha-s', 1)], { hasMore: true, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
+      loadMoreSessions,
+    })
+    const normalList = screen.getByRole('tree', { name: '会话' })
+    setScrollMetrics(normalList, { clientHeight: 200, scrollHeight: 280, scrollTop: 80 })
+    fireEvent.mouseMove(normalList, { clientY: 199 })
+    expect(loadMoreSessions).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByPlaceholderText('搜索会话…'), { target: { value: 'alpha' } })
+    const searchTree = screen.getByRole('tree', { name: '搜索结果' })
+    setScrollMetrics(searchTree, { clientHeight: 200, scrollHeight: 280, scrollTop: 80 })
+    fireEvent.scroll(searchTree)
+    fireEvent.wheel(searchTree, { deltaY: 20 })
+    expect(loadMoreSessions).not.toHaveBeenCalled()
+  })
+
+  it('loads near the end of the flat list from its own scroll container', async () => {
+    const loadMoreSessions = vi.fn(async () => {})
+    mount({
+      useSessions: hook(sessionState([summary('alpha-s', 1)], { hasMore: true, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
+      loadMoreSessions,
+    })
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '单列表' }))
+    const list = screen.getByRole('tree', { name: '会话' })
+    setScrollMetrics(list, { clientHeight: 200, scrollHeight: 600, scrollTop: 310 })
+    fireEvent.scroll(list)
+    await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(1) })
   })
 
   it('prunes deleted Workspace view state only after the Workspace baseline is ready', async () => {
@@ -334,6 +584,34 @@ describe('WorkspaceBrowser', () => {
     })
     expect(restored.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['two', 'one'])
     expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('two')
+  })
+
+  it('appends older Sessions discovered by pagination without promoting them', async () => {
+    const initial = sessionState([summary('newest', 300), summary('recent', 200)])
+    const b = mount({ useSessions: hook(initial) })
+    act(() => { b.store.actions.setGroupBy('flat') })
+    await waitFor(() => {
+      expect(b.store.getSnapshot().sessionOrderByAccount[FLAT_SESSION_ORDER_KEY])
+        .toEqual(['newest', 'recent'])
+    })
+
+    rerender(b, {
+      useSessions: hook(sessionState([
+        summary('newest', 300),
+        summary('recent', 200),
+        summary('older-page', 100),
+      ])),
+    })
+
+    await waitFor(() => {
+      expect(b.store.getSnapshot().sessionOrderByAccount[FLAT_SESSION_ORDER_KEY])
+        .toEqual(['newest', 'recent', 'older-page'])
+      expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+        expect.stringContaining('newest'),
+        expect.stringContaining('recent'),
+        expect.stringContaining('older-page'),
+      ])
+    })
   })
 
   it('archives a session from the row menu and hides archived rows in both modes', async () => {

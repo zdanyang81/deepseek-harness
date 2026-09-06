@@ -75,8 +75,13 @@ export function apply(ctx: ClientContext): void {
     // the current Session Workspace before the recent-Workspace fallback.
     startSession: (workspaceId) => { ctx.workspaces.startSession(workspaceId) },
     open: (sessionId) => { ctx.sessions.open(sessionId) },
+    loadMoreSessions: () => {
+      const sessions = ctx.sessions as typeof ctx.sessions & { loadMore?: () => Promise<void> }
+      return sessions.loadMore?.() ?? Promise.resolve()
+    },
     searchSessions,
     searchResultLimit: ctx.sessions.searchResultLimit,
+    loadFirstPrompt: sessionId => ctx.sessions.firstPrompt(sessionId),
     renameSession: async (sessionId, title) => {
       // Row → session-face hop: rename is a per-session verb (ISession), not
       // a list-service verb; the binding resolves any listed session.

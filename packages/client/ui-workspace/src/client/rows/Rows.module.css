@@ -307,6 +307,31 @@
   word-break: break-all;
 }
 
+.hoverPrompt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgb(255 255 255 / 14%);
+}
+
+.hoverPromptLabel {
+  font-size: 12px;
+  line-height: 16px;
+  color: #ADB2B8;
+}
+
+.hoverPromptText {
+  max-height: min(280px, calc(100vh - 180px));
+  overflow: auto;
+  font-size: 13px;
+  line-height: 19px;
+  color: #FFFFFF;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
 .hoverTime {
   font-size: 12px;
   line-height: 16px;

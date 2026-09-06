@@ -280,12 +280,26 @@ function SessionStatusDots({ statuses }: { statuses: readonly [SessionStatus, ..
   )
 }
 
-/** Hover-card body: full title, relative time, and every relevant live status. */
-function SessionHoverContent({ node, now, t }: { node: SessionNode; now: number; t: RowTranslate }) {
+/** Hover-card body: full title, first human prompt, time, and live statuses. */
+function SessionHoverContent({ node, firstPrompt, promptLoading, now, t }: {
+  node: SessionNode
+  firstPrompt: string | undefined
+  promptLoading: boolean
+  now: number
+  t: RowTranslate
+}) {
   const statuses = sessionStatuses(node, t)
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{displayTitle(node, t)}</div>
+      {(firstPrompt !== undefined || promptLoading) && (
+        <div className={css.hoverPrompt}>
+          <div className={css.hoverPromptLabel}>{t('hover.firstPrompt')}</div>
+          <div className={css.hoverPromptText}>
+            {firstPrompt ?? t('hover.firstPromptLoading')}
+          </div>
+        </div>
+      )}
       {/* Same placeholder rule as the row's trailing cell: no timestamp
           before the first prompt. */}
       {!node.blank && <div className={css.hoverTime}>{hoverTimeLabel(node.updatedAt, now, t)}</div>}
@@ -359,7 +373,9 @@ export function SearchResultItem({ result, currentId, onOpen, t }: {
  * @param props.t - the browser root's locale seat.
  * @returns the session row.
  */
-export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork, onArchive, drag, flat = false, t }: {
+export function SessionNodeItem({
+  node, currentId, now, onOpen, onRename, onFork, onArchive, loadFirstPrompt, drag, flat = false, t,
+}: {
   node: SessionNode
   currentId: string | undefined
   now: number
@@ -370,6 +386,8 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
   onFork: (id: SessionNode['id']) => void
   /** Archive this session (row menu action; commits without a dialog). */
   onArchive: (id: SessionNode['id']) => void
+  /** Resolve the first prompt when list projection data is not available. */
+  loadFirstPrompt?: ((id: SessionNode['id']) => Promise<string | undefined>) | undefined
   /** Present only on draggable rows (workspace-group sessions outside search). */
   drag?: RowDragProps | undefined
   /** The row is rendered without a parent Workspace header. */
@@ -383,6 +401,10 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
   const primaryStatus = statuses[0]
   const showStatus = primaryStatus.state !== 'done' || row.completed
   const [menuOpen, setMenuOpen] = useState(false)
+  const [loadedPrompt, setLoadedPrompt] = useState<{
+    status: 'idle' | 'loading' | 'loaded'
+    text?: string
+  }>({ status: 'idle' })
   // Archive hides the row through the registry-global archive set and never
   // touches the session log, so it is not styled as destructive and needs no
   // confirmation dialog.
@@ -392,6 +414,16 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
     // 20-native glyph in the menu's 16px icon slot (Menu.module.css .itemIcon).
     { id: 'archive', label: t('menu.archiveSession'), icon: <IconArchiveOutline20 size={16} /> },
   ]
+  const firstPrompt = node.firstPrompt ?? loadedPrompt.text
+  const ensureFirstPrompt = (): void => {
+    if (firstPrompt !== undefined || loadedPrompt.status !== 'idle' || loadFirstPrompt === undefined) return
+    setLoadedPrompt({ status: 'loading' })
+    void loadFirstPrompt(node.id).then((text) => {
+      setLoadedPrompt({ status: 'loaded', ...(text === undefined ? {} : { text }) })
+    }).catch(() => {
+      setLoadedPrompt({ status: 'idle' })
+    })
+  }
   // Figma session cell: pad 8, status slot 16, then a 4px title gap.
   const ownRow = (
     <div
@@ -402,6 +434,7 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
       )}
       role="treeitem"
       aria-selected={selected}
+      onPointerEnter={ensureFirstPrompt}
       onClick={() => { onOpen(node.id) }}
       draggable={drag !== undefined}
       onDragStart={drag === undefined
@@ -474,7 +507,15 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
   return (
     <HoverCard
       anchor={ownRow}
-      content={<SessionHoverContent node={node} now={now} t={t} />}
+      content={(
+        <SessionHoverContent
+          node={node}
+          firstPrompt={firstPrompt}
+          promptLoading={loadedPrompt.status === 'loading'}
+          now={now}
+          t={t}
+        />
+      )}
       disabled={menuOpen || drag?.active === true}
       copyText={row.blank ? undefined : row.title}
       copyLabel={t('copy')}
