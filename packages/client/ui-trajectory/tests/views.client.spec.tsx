@@ -392,6 +392,7 @@ function mount(fixture: Awaited<ReturnType<typeof bench>>) {
         actions={conversation.actions}
         renderSlot={() => null}
         open={vi.fn()}
+        loadFirstPrompt={vi.fn(async () => undefined)}
         selectView={conversation.actions.setView}
         t={tConversation}
       />

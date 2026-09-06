@@ -351,6 +351,7 @@ describe('session.history projections block', () => {
     expect(after.projections.values.sessionListMetadata).toEqual({
       blank: true,
       lastPromptAt: session.eventAt(SessionSeq(session.seq - 1))?.time,
+      firstPrompt: 'm0',
     })
   })
 
@@ -363,7 +364,7 @@ describe('session.history projections block', () => {
     await fiber.await()
     await vi.waitFor(() => {
       expect(ctx.sessionProjections.snapshot(session).values.sessionListMetadata)
-        .toEqual({ blank: true, lastPromptAt: null })
+        .toEqual({ blank: true, lastPromptAt: null, firstPrompt: null })
     })
     await fiber.dispose()
     expect('sessionListMetadata' in ctx.sessionProjections.snapshot(session).values).toBe(false)
@@ -385,8 +386,33 @@ describe('session.list projections column', () => {
     expect(row?.projections?.values.sessionListMetadata).toEqual({
       blank: false,
       lastPromptAt: session.eventAt(SessionSeq(session.seq - 1))?.time,
+      firstPrompt: 'm0',
     })
     expect(row?.projections?.asOfSeq).toBe(session.seq - 1)
+  })
+
+  it('keeps the first human prompt and bounds its preview by Unicode code points', async () => {
+    const { ctx, session } = await harness(true)
+    const gateway = remote(ctx)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const expected = `${'a'.repeat(1_999)}😀`
+    session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: `${expected}tail` }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'replacement question' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+
+    const lookup = await gateway.firstPrompt(request({ sessionId: session.id }))
+    if (!lookup.ok) throw new Error('unreachable')
+    expect(lookup.value.text).toBe(expected)
+
+    const response = await gateway.list(request({}))
+    if (!response.ok) throw new Error('unreachable')
+    const row = response.value.items.find(item => item.sessionId === session.id)
+    expect(row?.projections?.values.sessionListMetadata?.firstPrompt).toBe(expected)
   })
 
   it('lists the latest preset selected by a blank Session instead of its creation preset', async () => {
@@ -447,7 +473,7 @@ describe('session.list projections column', () => {
             asOfSeq: SessionSeq(7),
             values: {
               'test/last-user': { text: 'cached' },
-              sessionListMetadata: { blank: false, lastPromptAt: 6 },
+              sessionListMetadata: { blank: false, lastPromptAt: 6, firstPrompt: 'cached first question' },
               title: 'Cached title',
             },
           }
@@ -461,7 +487,7 @@ describe('session.list projections column', () => {
       asOfSeq: 7,
       values: {
         'test/last-user': { text: 'cached' },
-        sessionListMetadata: { blank: false, lastPromptAt: 6 },
+        sessionListMetadata: { blank: false, lastPromptAt: 6, firstPrompt: 'cached first question' },
         title: 'Cached title',
       },
     })
@@ -492,7 +518,7 @@ describe('session.list projections column', () => {
       session.append('turn/start', { turn: 1 })
       session.append('user/message', createUserMessage({
         content: [{ type: 'text', text: secret }],
-        source: { kind: 'user' },
+        source: { kind: 'plugin', plugin: 'test/private-prompt' },
       }), { surfaceOp: 'append' })
       await ctx.sessionProjectionCache.write(session)
       const stored = await readFile(
@@ -599,9 +625,9 @@ describe('Session control projection frames', () => {
       (f): f is Extract<SessionControlFrame, { type: 'projection' }> =>
         f.type === 'projection' && f.key === 'sessionListMetadata',
     )).toEqual([
-      { type: 'projection', sessionId: session.id, key: 'sessionListMetadata', value: { blank: true, lastPromptAt: 100 }, seq: 0 },
-      { type: 'projection', sessionId: session.id, key: 'sessionListMetadata', value: { blank: false, lastPromptAt: 100 }, seq: 1 },
-      { type: 'projection', sessionId: session.id, key: 'sessionListMetadata', value: { blank: false, lastPromptAt: 300 }, seq: 2 },
+      { type: 'projection', sessionId: session.id, key: 'sessionListMetadata', value: { blank: true, lastPromptAt: 100, firstPrompt: 'm0' }, seq: 0 },
+      { type: 'projection', sessionId: session.id, key: 'sessionListMetadata', value: { blank: false, lastPromptAt: 100, firstPrompt: 'm0' }, seq: 1 },
+      { type: 'projection', sessionId: session.id, key: 'sessionListMetadata', value: { blank: false, lastPromptAt: 300, firstPrompt: 'm0' }, seq: 2 },
     ])
     // Frame seq aligns with the tail block's asOfSeq vocabulary (higher-seq-wins compatible).
     const tail = await opening(proxy, session.id)

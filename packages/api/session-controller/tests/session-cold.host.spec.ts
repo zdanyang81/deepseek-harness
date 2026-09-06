@@ -144,10 +144,10 @@ describe('sessions.list cold merge', () => {
       cachedSnapshot: (meta: SessionHeader) => {
         cacheCalls.push(String(meta.id))
         if (meta.id === sid('cached-blank')) {
-          return { asOfSeq: 0, values: { sessionListMetadata: { blank: true, lastPromptAt: null } } }
+          return { asOfSeq: 0, values: { sessionListMetadata: { blank: true, lastPromptAt: null, firstPrompt: null } } }
         }
         if (meta.id === sid('cached-conversation')) {
-          return { asOfSeq: 1, values: { sessionListMetadata: { blank: false, lastPromptAt: 1000 } } }
+          return { asOfSeq: 1, values: { sessionListMetadata: { blank: false, lastPromptAt: 1000, firstPrompt: 'Initial question' } } }
         }
         return undefined
       },

@@ -72,6 +72,21 @@ describe('deriveGroups', () => {
       .toMatchObject({ pendingInteraction: 'plan-review', running: true })
   })
 
+  it('projects a non-empty first human prompt into grouped and flat rows', () => {
+    const prompted = {
+      ...summary('prompted', 10),
+      projectionValues: {
+        sessionListMetadata: { blank: false, lastPromptAt: 10, firstPrompt: 'Original question' },
+      },
+    }
+    const sessions = list(prompted)
+    const grouped = deriveGroups(
+      sessions, [workspace('project', ['prompted'])], noArchive, noAttention, view(['project']),
+    )
+    expect(grouped[0]?.sessions[0]?.firstPrompt).toBe('Original question')
+    expect(deriveFlat(sessions, noArchive, noAttention)[0]?.firstPrompt).toBe('Original question')
+  })
+
   it.each(['approval', 'question'] as const)(
     'projects the %s pending-interaction kind',
     (kind) => {

@@ -33,6 +33,7 @@ import type {
   SessionWireHeader,
   SessionWireEvent,
 } from './types.ts'
+import { firstPromptText } from './first-prompt.ts'
 import { SessionAssistantStreamAccumulator } from './assistant-stream.ts'
 
 const DEFAULT_MAX_MESSAGES = 50
@@ -66,6 +67,22 @@ export class SessionHistoryController {
       for (const close of this.closeFollowers) close()
       this.closeFollowers.clear()
     }, 'session-controller.history')
+  }
+
+  /**
+   * Read the first human prompt without activating an Agent.
+   * @param sessionId - durable Session to inspect.
+   * @param signal - caller cancellation for persistence reads.
+   * @returns bounded prompt text, an empty string for a textless first prompt, or null when no prompt exists.
+   */
+  async firstPrompt(sessionId: SessionId, signal: AbortSignal): Promise<string | null> {
+    using source = await this.sourceFor({ kind: 'session', sessionId }, signal, false)
+    signal.throwIfAborted()
+    for (const event of source.events) {
+      const prompt = firstPromptText(event)
+      if (prompt !== undefined) return prompt
+    }
+    return null
   }
 
   /**

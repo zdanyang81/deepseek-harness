@@ -41,12 +41,17 @@ declare module '@deepseek-ai/dsh-session/types' {
   }
 }
 
+/** Maximum first-prompt preview length in Unicode code points. */
+export const SESSION_FIRST_PROMPT_MAX_CODE_POINTS = 2_000
+
 /** Persisted hints used to summarize a cold Session. */
 export interface SessionListMetadata {
   /** Whether the folded prefix contains no turn. */
   readonly blank: boolean
   /** Latest human-authored prompt time in the folded prefix. */
   readonly lastPromptAt: number | null
+  /** Bounded text from the first human-authored prompt, or null before one is committed. */
+  readonly firstPrompt: string | null
 }
 
 /** Every available cached wire value used as partial, possibly stale Session-list hints. */
@@ -237,6 +242,17 @@ export interface SkillListValue {
 /** Session list request. */
 export interface SessionListRequest {
   readonly cursor?: string
+}
+
+/** Cold-safe request for one Session's first human prompt. */
+export interface SessionFirstPromptRequest {
+  readonly sessionId: SessionId
+}
+
+/** Bounded first-prompt preview. */
+export interface SessionFirstPromptValue {
+  /** Empty for a textless first prompt; null when the Session has no human prompt. */
+  readonly text: string | null
 }
 
 /** Session list response value. */

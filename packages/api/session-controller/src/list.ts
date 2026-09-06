@@ -18,6 +18,7 @@ import type {
   SessionListMetadata, SessionProjectionHints, SessionProjectionValues, SessionSearchItem,
   SessionSearchValue, SessionSummary,
 } from './types.ts'
+import { firstPromptText, truncateUnicodeCodePoints } from './first-prompt.ts'
 
 const SEARCH_PROVIDER_CALL_LIMIT = 100
 const SESSION_SEARCH_QUERY_MAX_CHARS = 500
@@ -26,6 +27,7 @@ const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
 const sessionListMetadataSchema: z.ZodType<SessionListMetadata> = z.object({
   blank: z.boolean(),
   lastPromptAt: z.number().nullable(),
+  firstPrompt: z.string().nullable(),
 })
 
 const imageLimitsSchema = z.object({
@@ -48,29 +50,14 @@ export function applySessionListMetadata(
   event: SessionEvent,
 ): SessionListMetadata {
   const blank = state.blank && event.type !== 'turn/start'
-  const lastPromptAt = event.type === 'user/message' && event.data.source.kind === 'user'
-    ? event.time
-    : state.lastPromptAt
-  return blank === state.blank && lastPromptAt === state.lastPromptAt
+  const prompt = firstPromptText(event)
+  const lastPromptAt = prompt === undefined ? state.lastPromptAt : event.time
+  const firstPrompt = prompt !== undefined && state.firstPrompt === null ? prompt : state.firstPrompt
+  return blank === state.blank
+    && lastPromptAt === state.lastPromptAt
+    && firstPrompt === state.firstPrompt
     ? state
-    : { blank, lastPromptAt }
-}
-
-/**
- * Return the longest prefix containing at most `maximum` Unicode code points.
- * @param value - source text.
- * @param maximum - maximum number of Unicode code points.
- * @returns the source text or its longest allowed prefix.
- */
-export function truncateUnicodeCodePoints(value: string, maximum: number): string {
-  let count = 0
-  let end = 0
-  for (const codePoint of value) {
-    if (count === maximum) return value.slice(0, end)
-    count++
-    end += codePoint.length
-  }
-  return value
+    : { blank, lastPromptAt, firstPrompt }
 }
 
 /** Owns list projection registration, bounded cold summaries, and authorized search. */
@@ -80,10 +67,10 @@ export class ApiSessionList {
     ctx.sessionProjections.register<'sessionListMetadata', SessionListMetadata>({
       key: 'sessionListMetadata',
       stateSchema: sessionListMetadataSchema,
-      init: () => ({ blank: true, lastPromptAt: null }),
+      init: () => ({ blank: true, lastPromptAt: null, firstPrompt: null }),
       apply: applySessionListMetadata,
       wire: { viewSchema: sessionListMetadataSchema, view: state => state },
-      stateVersion: 1,
+      stateVersion: 2,
     })
     ctx.inject(['attachments'], (attachmentCtx) => {
       ctx.sessionProjections.register<'imageLimits', null>({

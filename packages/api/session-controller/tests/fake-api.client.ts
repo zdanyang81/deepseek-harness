@@ -123,6 +123,8 @@ export class FakeApiClient {
 
   // Programmable slots (defaults answer OK-empty); reassign per case.
   onList: (payload: unknown) => Promise<RemoteResult<{ items: never[] }>> = () => Promise.resolve(ok({ items: [] }))
+  onFirstPrompt: (payload: unknown) => Promise<RemoteResult<{ text: string | null }>> =
+    () => Promise.resolve(ok({ text: null }))
   onSearch: (payload: unknown) => Promise<RemoteResult<{ items: SessionSearchItem[]; hasMore: boolean }>> =
     () => Promise.resolve(ok({ items: [], hasMore: false }))
   onCreate: (payload: unknown) => Promise<RemoteResult<{ sessionId: SessionId }>> = () => Promise.resolve(ok({ sessionId: 'fk-new' as SessionId }))
@@ -207,6 +209,7 @@ export class FakeApiClient {
       session: {
         canOpenWorkspacePath: () => Promise.resolve(ok(true)),
         list: payload => this.record('session.list', payload, this.onList(payload)),
+        firstPrompt: payload => this.record('session.firstPrompt', payload, this.onFirstPrompt(payload)),
         modelCatalog: () => Promise.resolve({
           ok: true,
           value: {

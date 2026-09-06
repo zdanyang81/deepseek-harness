@@ -102,6 +102,7 @@ export function apply(ctx: Context): void {
     open: (sessionId) => { sessions.open(sessionId) },
     searchSessions,
     searchResultLimit: sessions.searchResultLimit,
+    loadFirstPrompt: sessionId => sessions.firstPrompt(sessionId),
     renameSession: async (sessionId, title) => {
       // Row → session-face hop: rename is a per-session verb (ISession), not
       // a list-service verb; the binding resolves any listed session.

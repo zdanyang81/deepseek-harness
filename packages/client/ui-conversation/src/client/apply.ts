@@ -284,6 +284,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     inject: (sessionId: SessionId, actions: BoundActions<typeof conversationStore>): ConversationSessionHeaderInjected => ({
       hooks: { conversationViews },
       open: (id) => { sessions.open(id) },
+      loadFirstPrompt: id => sessions.firstPrompt(id),
       selectView: (view) => {
         activateView(sessionId, view)
         actions.setView(view)

@@ -262,6 +262,8 @@ export interface ConversationSessionHeaderInjected {
   readonly hooks: { readonly conversationViews: ObservableSnapshot<readonly ViewTab[]> }
   /** Select a Session through the Session Controller. */
   open: (sessionId: SessionId) => void
+  /** Resolve one Session's first human prompt for a title preview. */
+  loadFirstPrompt: (sessionId: SessionId) => Promise<string | undefined>
   /** Select and activate one registered Conversation View. */
   selectView: (view: string) => void
 }

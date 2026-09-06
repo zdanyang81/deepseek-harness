@@ -9,7 +9,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
-import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { LlmAttemptId } from '@deepseek-ai/dsh-llm'
 import { RemoteStreamCarrierError } from '@deepseek-ai/dsh-api-gateway/client'
 import { SESSION_FORMAT_VERSION, SessionSeq } from '@deepseek-ai/dsh-session/types'
@@ -131,6 +131,39 @@ describe('search', () => {
     })
     expect(b.api.lastSearchSignal).toBe(signal)
     expect(b.svc.list.getSnapshot()).toBe(before)
+  })
+})
+
+describe('first-prompt previews', () => {
+  it('prefers projected text and shares one lazy cold request', async () => {
+    const b = bench()
+    await feedList(b, [{
+      id: 'projected',
+      projections: { sessionListMetadata: { blank: false, lastPromptAt: 1, firstPrompt: 'projected prompt' } },
+    }, { id: 'cold' }])
+    b.api.onFirstPrompt = vi.fn(() => Promise.resolve(ok({ text: 'cold prompt' })))
+
+    await expect(b.svc.firstPrompt(sid('projected'))).resolves.toBe('projected prompt')
+    const first = b.svc.firstPrompt(sid('cold'))
+    const second = b.svc.firstPrompt(sid('cold'))
+    await expect(Promise.all([first, second])).resolves.toEqual(['cold prompt', 'cold prompt'])
+    expect(b.api.onFirstPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retain a failed lazy read', async () => {
+    const b = bench()
+    let attempts = 0
+    b.api.onFirstPrompt = vi.fn(() => {
+      attempts++
+      const response: RemoteResult<{ text: string | null }> = attempts === 1
+        ? err(new RemoteError('gateway/internal', 'read failed', {}))
+        : ok({ text: null })
+      return Promise.resolve(response)
+    })
+
+    await expect(b.svc.firstPrompt(sid('cold'))).rejects.toMatchObject({ message: 'read failed' })
+    await expect(b.svc.firstPrompt(sid('cold'))).resolves.toBeUndefined()
+    expect(b.api.onFirstPrompt).toHaveBeenCalledTimes(2)
   })
 })
 

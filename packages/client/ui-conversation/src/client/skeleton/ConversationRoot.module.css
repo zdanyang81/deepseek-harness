@@ -117,6 +117,34 @@
   line-height: 18px;
 }
 
+.titleHoverAnchor {
+  display: block;
+  min-width: 0;
+}
+
+.titleHoverContent {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.titleHoverLabel {
+  font-size: 12px;
+  line-height: 16px;
+  color: #ADB2B8;
+}
+
+.titleHoverText {
+  max-height: min(320px, calc(100vh - 80px));
+  overflow: auto;
+  font-size: 13px;
+  line-height: 19px;
+  color: #FFFFFF;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
 .crumb:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
 }

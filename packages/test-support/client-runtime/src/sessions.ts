@@ -198,7 +198,7 @@ export class TestSessions implements ISessions {
   /** Calls observed on the service-level face, newest last. */
   readonly calls: {
     method: 'create' | 'open' | 'openSubagent' | 'setSubagentCatalogOpen' | 'refreshSubagents'
-      | 'clear' | 'refresh' | 'search' | 'fork'
+      | 'clear' | 'refresh' | 'search' | 'firstPrompt' | 'fork'
     args: unknown[]
   }[] = []
 
@@ -504,6 +504,18 @@ export class TestSessions implements ISessions {
   search(query: string, signal: AbortSignal): ReturnType<ISessions['search']> {
     this.calls.push({ method: 'search', args: [query, signal] })
     return Promise.resolve({ ok: true, value: this.searchStub?.(query, signal) ?? { items: [], hasMore: false } })
+  }
+
+  /**
+   * Resolve projected first-prompt text for fixture title previews.
+   * @param sessionId - fixture Session to inspect.
+   * @returns projected text, or undefined when absent or empty.
+   */
+  firstPrompt(sessionId: SessionId): Promise<string | undefined> {
+    this.calls.push({ method: 'firstPrompt', args: [sessionId] })
+    const prompt = this.list.getSnapshot().byId[sessionId]
+      ?.projectionValues?.sessionListMetadata?.firstPrompt
+    return Promise.resolve(prompt === null || prompt === '' ? undefined : prompt)
   }
 
   /**

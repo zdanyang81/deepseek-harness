@@ -295,12 +295,26 @@ function ActiveScheduleIndicator({ t, search = false }: { t: RowTranslate; searc
   )
 }
 
-/** Hover-card body: full title, relative time, and every relevant live status. */
-function SessionHoverContent({ node, now, t }: { node: SessionNode; now: number; t: RowTranslate }) {
+/** Hover-card body: full title, first human prompt, time, and live statuses. */
+function SessionHoverContent({ node, firstPrompt, promptLoading, now, t }: {
+  node: SessionNode
+  firstPrompt: string | undefined
+  promptLoading: boolean
+  now: number
+  t: RowTranslate
+}) {
   const statuses = sessionStatuses(node, t)
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{displayTitle(node, t)}</div>
+      {(firstPrompt !== undefined || promptLoading) && (
+        <div className={css.hoverPrompt}>
+          <div className={css.hoverPromptLabel}>{t('hover.firstPrompt')}</div>
+          <div className={css.hoverPromptText}>
+            {firstPrompt ?? t('hover.firstPromptLoading')}
+          </div>
+        </div>
+      )}
       {/* Same placeholder rule as the row's trailing cell: no timestamp
           before the first prompt. */}
       {!node.blank && <div className={css.hoverTime}>{hoverTimeLabel(node.updatedAt, now, t)}</div>}
@@ -377,7 +391,7 @@ export function SearchResultItem({ result, currentId, onOpen, t }: {
  * @returns the session row.
  */
 export function SessionNodeItem({
-  node, currentId, now, onOpen, onRename, onFork, onArchive, onReveal, drag, flat = false, t,
+  node, currentId, now, onOpen, onRename, onFork, onArchive, loadFirstPrompt, onReveal, drag, flat = false, t,
 }: {
   node: SessionNode
   currentId: string | undefined
@@ -389,6 +403,8 @@ export function SessionNodeItem({
   onFork: (id: SessionNode['id']) => void
   /** Archive this session (row menu action; commits without a dialog). */
   onArchive: (id: SessionNode['id']) => void
+  /** Resolve the first prompt when list projection data is not available. */
+  loadFirstPrompt?: ((id: SessionNode['id']) => Promise<string | undefined>) | undefined
   /** Scroll this row into view after search navigation, then acknowledge it. */
   onReveal?: (() => void) | undefined
   /** Present only on draggable rows (workspace-group sessions outside search). */
@@ -404,6 +420,10 @@ export function SessionNodeItem({
   const primaryStatus = statuses[0]
   const showStatus = primaryStatus.state !== 'done' || row.completed
   const [menuOpen, setMenuOpen] = useState(false)
+  const [loadedPrompt, setLoadedPrompt] = useState<{
+    status: 'idle' | 'loading' | 'loaded'
+    text?: string
+  }>({ status: 'idle' })
   const rowRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (onReveal === undefined) return
@@ -419,6 +439,16 @@ export function SessionNodeItem({
     // 20-native glyph in the menu's 16px icon slot (Menu.module.css .itemIcon).
     { id: 'archive', label: t('menu.archiveSession'), icon: <IconArchiveOutline20 size={16} /> },
   ]
+  const firstPrompt = node.firstPrompt ?? loadedPrompt.text
+  const ensureFirstPrompt = (): void => {
+    if (firstPrompt !== undefined || loadedPrompt.status !== 'idle' || loadFirstPrompt === undefined) return
+    setLoadedPrompt({ status: 'loading' })
+    void loadFirstPrompt(node.id).then((text) => {
+      setLoadedPrompt({ status: 'loaded', ...(text === undefined ? {} : { text }) })
+    }).catch(() => {
+      setLoadedPrompt({ status: 'idle' })
+    })
+  }
   // Figma session cell: pad 8, status slot 16, then a 4px title gap.
   const ownRow = (
     <div
@@ -430,6 +460,7 @@ export function SessionNodeItem({
       )}
       role="treeitem"
       aria-selected={selected}
+      onPointerEnter={ensureFirstPrompt}
       onClick={() => { onOpen(node.id) }}
       draggable={drag !== undefined}
       onDragStart={drag === undefined
@@ -503,7 +534,15 @@ export function SessionNodeItem({
   return (
     <HoverCard
       anchor={ownRow}
-      content={<SessionHoverContent node={node} now={now} t={t} />}
+      content={(
+        <SessionHoverContent
+          node={node}
+          firstPrompt={firstPrompt}
+          promptLoading={loadedPrompt.status === 'loading'}
+          now={now}
+          t={t}
+        />
+      )}
       disabled={menuOpen || drag?.active === true}
       copyText={row.blank ? undefined : row.title}
       copyLabel={t('copy')}

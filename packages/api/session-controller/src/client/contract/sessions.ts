@@ -85,6 +85,12 @@ export interface ISessions {
     signal: AbortSignal,
   ): Promise<RemoteResult<{ items: SessionSearchResultItem[]; hasMore: boolean }>>
   /**
+   * Resolve one Session's first human prompt for title previews.
+   * @param sessionId - Session whose first prompt is required.
+   * @returns bounded text, or undefined for a missing or textless first prompt.
+   */
+  firstPrompt(sessionId: SessionId): Promise<string | undefined>
+  /**
    * Fork a session from a completed-turn prefix of the source; on resolution
    * the child is in the list store and `open()` can target it.
    * @param opts - source session id, the optional event seq anchoring the

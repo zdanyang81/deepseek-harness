@@ -117,6 +117,10 @@ function mount(
     summaryOrigin?: 'subagent'
     /** Insert a first-level subagent between the root and selected child. */
     nestedSubagent?: boolean
+    /** First human prompt returned for the selected Session title preview. */
+    firstPrompt?: string
+    /** Keep the prompt out of list projection data to exercise the lazy request. */
+    lazyFirstPrompt?: boolean
     /** A composer block another plugin raised for this session. */
     composerBlock?: { reason: string }
     /** Mutable view ledger used by registration-order regressions. */
@@ -134,6 +138,9 @@ function mount(
     id: SID, displayTitle: 'Child', parentId: options.nestedSubagent === true ? parent : root,
     cwd: '/projects/one', running: false, blank: options.summaryBlank ?? false, updatedAt: 3,
     ...(options.summaryOrigin === undefined ? {} : { origin: options.summaryOrigin }),
+    ...(options.firstPrompt === undefined || options.lazyFirstPrompt === true
+      ? {}
+      : { projectionValues: { sessionListMetadata: { blank: false, lastPromptAt: 3, firstPrompt: options.firstPrompt } } }),
   }
   const listed = options.omitSummaryRow !== true
   const sessions = createSnapshotStore<SessionListState>({
@@ -163,6 +170,7 @@ function mount(
   const inputActions = wiring.actions
   const stop = vi.fn()
   const open = vi.fn()
+  const loadFirstPrompt = vi.fn(() => Promise.resolve(options.firstPrompt))
   const slotCalls: string[] = []
   const lineageOwners: ConversationHeaderLineageOwnerProps[] = []
   const viewTabs = options.viewTabs ?? [
@@ -203,6 +211,7 @@ function mount(
           actions={store.actions}
           renderSlot={renderSlot as never}
           open={open}
+          loadFirstPrompt={loadFirstPrompt}
           selectView={(view) => { store.actions.setView(view) }}
           t={t}
         />
@@ -306,6 +315,7 @@ function mount(
   const view = render(<ConversationRoot {...props} />)
   return {
     view, store, wiring, sink, retargetWorkspace, session, conversation, slotCalls, lineageOwners, seatOwners, open,
+    loadFirstPrompt,
     pickerOwner: () => pickerOwner,
     rerender: () => { view.rerender(<ConversationRoot {...props} />) },
   }
@@ -395,6 +405,26 @@ describe('ConversationRoot resident composer', () => {
     expect(b.sink).toHaveBeenCalledWith('ordinary revised', [], 'queue', expect.any(AbortSignal))
     expect((b.view.getByRole('button', { name: 'Child' }) as HTMLButtonElement).disabled).toBe(true)
     expect(b.view.queryByText('Root')).toBeNull()
+  })
+
+  it('loads and shows the first question after dwelling on the current Session title', async () => {
+    vi.useFakeTimers()
+    try {
+      const b = mount(sessionSnapshotOf(), undefined, undefined, {
+        firstPrompt: 'Please solve the original long-running problem.',
+        lazyFirstPrompt: true,
+      })
+      const title = b.view.getByRole('button', { name: 'Child' })
+      fireEvent.pointerEnter(title.parentElement as HTMLElement)
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(b.view.getByText('正在读取…')).toBeTruthy()
+      await act(async () => { await Promise.resolve() })
+      expect(b.loadFirstPrompt).toHaveBeenCalledWith(SID)
+      expect(b.view.getByText('最开始的问题')).toBeTruthy()
+      expect(b.view.getByText('Please solve the original long-running problem.')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('shows hierarchy only for subagents and opens their ordinary owner', () => {

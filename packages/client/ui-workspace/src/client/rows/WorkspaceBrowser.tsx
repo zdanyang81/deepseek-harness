@@ -235,7 +235,7 @@ function workspaceGroupHalf(e: { clientY: number; currentTarget: HTMLElement }):
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
   'useSessions' | 'useSessionPendingInteraction' | 'startSession' | 'open' | 'forkSession'
-  | 'insertWorkspaceBefore' | 'insertSessionBefore' | 't'
+  | 'loadFirstPrompt' | 'insertWorkspaceBefore' | 'insertSessionBefore' | 't'
 > & {
   /** Host account home for POSIX hover-path abbreviation. */
   home?: string | undefined
@@ -274,7 +274,7 @@ type SessionTreeProps = Pick<
 
 /** The scrolling session tree; unmounting drops the sessions subscription and expand-all state. */
 function SessionTree({
-  useSessions, useSessionPendingInteraction, startSession, open, forkSession, workspaces, archivedSessionIds,
+  useSessions, useSessionPendingInteraction, startSession, open, forkSession, loadFirstPrompt, workspaces, archivedSessionIds,
   workspaceReady,
   onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive,
   insertWorkspaceBefore, insertSessionBefore, orderBy,
@@ -587,6 +587,7 @@ function SessionTree({
                     onRename={onSessionRename}
                     onFork={forkSession}
                     onArchive={onSessionArchive}
+                    loadFirstPrompt={loadFirstPrompt}
                     onReveal={node.id === revealSessionId && group.key === revealGroup
                       ? () => { onSessionRevealed(node.id) }
                       : undefined}
@@ -618,7 +619,7 @@ function SessionTree({
 
 /** The flat "In one list" body: every session is one draggable top-level row. */
 function FlatList({
-  useSessions, useSessionPendingInteraction, open, forkSession, onSessionRename, onSessionArchive,
+  useSessions, useSessionPendingInteraction, open, forkSession, loadFirstPrompt, onSessionRename, onSessionArchive,
   archivedSessionIds,
   orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder,
   revealSessionId, onSessionRevealed, t,
@@ -628,6 +629,7 @@ function FlatList({
   | 'useSessionPendingInteraction'
   | 'open'
   | 'forkSession'
+  | 'loadFirstPrompt'
   | 'onSessionRename'
   | 'onSessionArchive'
   | 'archivedSessionIds'
@@ -712,6 +714,7 @@ function FlatList({
               onRename={onSessionRename}
               onFork={forkSession}
               onArchive={onSessionArchive}
+              loadFirstPrompt={loadFirstPrompt}
               onReveal={node.id === revealSessionId
                 ? () => { onSessionRevealed(node.id) }
                 : undefined}
@@ -851,6 +854,7 @@ export function WorkspaceBrowser({
   createWorkspace,
   searchSessions,
   searchResultLimit,
+  loadFirstPrompt,
   useDirectoryFlow,
   useHostInfo,
   renderSlot,
@@ -1266,7 +1270,7 @@ export function WorkspaceBrowser({
             ? (
               <FlatList
                 useSessions={useSessions} useSessionPendingInteraction={useSessionPendingInteraction}
-                open={open} forkSession={forkSession}
+                open={open} forkSession={forkSession} loadFirstPrompt={loadFirstPrompt}
                 onSessionRename={onSessionRename} onSessionArchive={onSessionArchive}
                 archivedSessionIds={archivedSessionIds}
                 orderBy={orderBy}
@@ -1286,6 +1290,7 @@ export function WorkspaceBrowser({
                 onSessionRename={onSessionRename}
                 onSessionArchive={onSessionArchive}
                 forkSession={forkSession}
+                loadFirstPrompt={loadFirstPrompt}
                 workspaces={workspaces}
                 workspaceReady={workspacePhase === 'ready' && workspaceStreamState !== 'loading'}
                 groupExpansion={groupExpansion}

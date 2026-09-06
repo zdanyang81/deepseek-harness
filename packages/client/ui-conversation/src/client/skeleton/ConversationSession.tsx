@@ -1,7 +1,9 @@
 /** Strict per-session header/body content inserted into the resident conversation layout. */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import clsx from 'clsx'
+import { HoverCard } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {
@@ -21,6 +23,7 @@ interface Breadcrumb {
   readonly id: SessionId
   readonly displayTitle: string
   readonly subagent: boolean
+  readonly firstPrompt?: string
 }
 
 function deriveAncestry(list: SessionListState, id: SessionId): readonly Breadcrumb[] {
@@ -32,10 +35,12 @@ function deriveAncestry(list: SessionListState, id: SessionId): readonly Breadcr
     seen.add(cursor)
     const summary: SessionSummary | undefined = list.byId[cursor]
     if (summary === undefined) break
+    const firstPrompt = summary.projectionValues?.sessionListMetadata?.firstPrompt
     chain.unshift({
       id: summary.id,
       displayTitle: summary.displayTitle,
       subagent: summary.origin === 'subagent',
+      ...(firstPrompt === undefined || firstPrompt === null || firstPrompt === '' ? {} : { firstPrompt }),
     })
     if (summary.origin !== 'subagent') break
     cursor = summary.parentId
@@ -47,8 +52,50 @@ function equalBreadcrumbs(left: readonly Breadcrumb[], right: readonly Breadcrum
   return left.length === right.length
     && left.every((item, index) => {
       const other = right.at(index)
-      return other !== undefined && item.id === other.id && item.displayTitle === other.displayTitle
+      return other !== undefined
+        && item.id === other.id
+        && item.displayTitle === other.displayTitle
+        && item.firstPrompt === other.firstPrompt
     })
+}
+
+/** Add the first-question preview to one visible Session title. */
+function SessionTitleHover({ anchor, sessionId, firstPrompt, loadFirstPrompt, t }: {
+  anchor: ReactNode
+  sessionId: SessionId
+  firstPrompt: string | undefined
+  loadFirstPrompt: (sessionId: SessionId) => Promise<string | undefined>
+  t: ConversationSessionHeaderProps['t']
+}) {
+  const [loadedPrompt, setLoadedPrompt] = useState<{
+    status: 'idle' | 'loading' | 'loaded'
+    text?: string
+  }>({ status: 'idle' })
+  const preview = firstPrompt ?? loadedPrompt.text
+  const ensureFirstPrompt = (): void => {
+    if (preview !== undefined || loadedPrompt.status !== 'idle') return
+    setLoadedPrompt({ status: 'loading' })
+    void loadFirstPrompt(sessionId).then((text) => {
+      setLoadedPrompt({ status: 'loaded', ...(text === undefined ? {} : { text }) })
+    }).catch(() => {
+      setLoadedPrompt({ status: 'loaded' })
+    })
+  }
+  return (
+    <HoverCard
+      anchor={<span className={css.titleHoverAnchor} onPointerEnter={ensureFirstPrompt}>{anchor}</span>}
+      content={(
+        <div className={css.titleHoverContent}>
+          <div className={css.titleHoverLabel}>{t('hover.firstPrompt')}</div>
+          <div className={css.titleHoverText}>{preview ?? t('hover.firstPromptLoading')}</div>
+        </div>
+      )}
+      disabled={loadedPrompt.status === 'loaded' && preview === undefined}
+      copyText={preview}
+      copyLabel={t('hover.copyFirstPrompt')}
+      copiedLabel={t('hover.copied')}
+    />
+  )
 }
 
 /**
@@ -58,7 +105,7 @@ function equalBreadcrumbs(left: readonly Breadcrumb[], right: readonly Breadcrum
  */
 export function ConversationSessionHeader({
   sessionId, useSession, useSessions, useConversation, useConversationViews, useStore,
-  renderSlot, open, selectView, t,
+  renderSlot, open, loadFirstPrompt, selectView, t,
 }: ConversationSessionHeaderProps) {
   const tabs = useConversationViews(value => value)
   const selectedId = useStore(s => s.view)
@@ -80,7 +127,7 @@ export function ConversationSessionHeader({
               <nav className={css.crumbs} aria-label={t('session.hierarchy')}>
                 {ancestry.map((summary, index) => {
                   const last = index === ancestry.length - 1
-                  const title = (
+                  const titleButton = (
                     <button
                       type="button"
                       className={clsx(
@@ -93,6 +140,15 @@ export function ConversationSessionHeader({
                     >
                       {summary.displayTitle}
                     </button>
+                  )
+                  const title = (
+                    <SessionTitleHover
+                      anchor={titleButton}
+                      sessionId={summary.id}
+                      firstPrompt={summary.firstPrompt}
+                      loadFirstPrompt={loadFirstPrompt}
+                      t={t}
+                    />
                   )
                   const lineage = last || summary.subagent
                   const lineageOwner = {

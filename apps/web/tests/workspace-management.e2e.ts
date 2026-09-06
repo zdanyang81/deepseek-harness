@@ -492,9 +492,12 @@ describe('web e2e: workspace management (create / rename / flat view / hover aff
     const sessionRow = await seededSessionRow()
     const rowTitle = await sessionRow.locator('[class*="title"]').innerText()
     await sessionRow.hover()
-    // Card content: the full title plus the Idle status line (no aria role —
-    // text anchors are the stable selector).
+    // Card content: the full title, first question, and Idle status line (no
+    // aria role — text anchors are the stable selector).
+    const firstQuestion = 'Use the read tool twice in one assistant message: read a.txt and b.txt. Then reply with the single word DONE and stop.'
     await expect.poll(() => page.getByText('Idle', { exact: true }).count(), { timeout: 5_000 }).toBeGreaterThanOrEqual(1)
+    expect(await page.getByText('First question', { exact: true }).count()).toBe(1)
+    expect(await page.getByText(firstQuestion, { exact: true }).count()).toBe(1)
     // The card is REACHABLE: it sits 8px off the row, so getting to it means
     // crossing ground that belongs to neither. Hovering it must not dismiss
     // it — the hazard this scenario pins.
@@ -517,6 +520,13 @@ describe('web e2e: workspace management (create / rename / flat view / hover aff
     // Leaving anchor and card together closes it after the grace.
     await page.getByRole('button', { name: 'Settings' }).hover()
     await expect.poll(() => card.count(), { timeout: 5_000 }).toBe(0)
+
+    // Select the same cold Session only after the sidebar assertion; the main
+    // conversation header then exposes the same preview through its own card.
+    await (await seededSessionRow()).click()
+    const headerTitle = page.locator('header button[class*="crumbCurrent"]').first()
+    await headerTitle.hover()
+    await expect.poll(() => page.getByText(firstQuestion, { exact: true }).count(), { timeout: 5_000 }).toBe(1)
     expect(tripwire.pageErrors).toEqual([])
   }, 60_000)
 

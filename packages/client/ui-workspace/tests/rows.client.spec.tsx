@@ -484,20 +484,28 @@ describe('workspace browser rows', () => {
   })
 
 
-  it('shows the hover card after the dwell and suppresses it while the row menu is open', () => {
+  it('loads the first question for the hover card and suppresses it while the row menu is open', async () => {
     vi.useFakeTimers()
     try {
       const node: SessionNode = {
-        id: sid('s1'), title: 'Hovered', blank: false, running: true,
-        runningSubagentCount: 0, completed: false, hasActiveSchedule: false, updatedAt: 0,
+        id: sid('s1'), title: 'Hovered', blank: false,
+        running: true, runningSubagentCount: 0, completed: false, hasActiveSchedule: false, updatedAt: 0,
       }
+      let resolvePrompt!: (text: string) => void
+      const loadFirstPrompt = vi.fn(() => new Promise<string>((resolve) => { resolvePrompt = resolve }))
       render(<SessionNodeItem node={node} currentId={undefined} now={60_000} onOpen={vi.fn()}
-        onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} t={t} />)
-      const wrapper = screen.getByRole('treeitem').parentElement as HTMLElement
-      fireEvent.pointerEnter(wrapper)
+        onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} loadFirstPrompt={loadFirstPrompt} t={t} />)
+      const row = screen.getByRole('treeitem')
+      const wrapper = row.parentElement as HTMLElement
+      fireEvent.pointerEnter(row)
       act(() => { vi.advanceTimersByTime(500) })
-      // Card body: full title + relative time + running status.
+      expect(loadFirstPrompt).toHaveBeenCalledWith(node.id)
+      expect(screen.getByText('正在读取…')).toBeTruthy()
+      await act(async () => { resolvePrompt('Please investigate the original problem.'); await Promise.resolve() })
+      // Card body: full title + first question + relative time + running status.
       expect(screen.getAllByText('Hovered')).toHaveLength(2)
+      expect(screen.getByText('最开始的问题')).toBeTruthy()
+      expect(screen.getByText('Please investigate the original problem.')).toBeTruthy()
       expect(screen.getByText('1分钟前')).toBeTruthy()
       expect(screen.getAllByText('进行中')).toHaveLength(2)
       fireEvent.pointerLeave(wrapper)
@@ -509,6 +517,22 @@ describe('workspace browser rows', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('retries a failed lazy first-question read on a later hover', async () => {
+    const node: SessionNode = {
+      id: sid('s1'), title: 'Retry', blank: false,
+      running: false, runningSubagentCount: 0, completed: false, hasActiveSchedule: false, updatedAt: 0,
+    }
+    const loadFirstPrompt = vi.fn(() => Promise.reject(new Error('cold read failed')))
+    render(<SessionNodeItem node={node} currentId={undefined} now={0} onOpen={vi.fn()}
+      onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} loadFirstPrompt={loadFirstPrompt} t={t} />)
+    const row = screen.getByRole('treeitem')
+    fireEvent.pointerEnter(row)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.pointerEnter(row)
+    await act(async () => { await Promise.resolve() })
+    expect(loadFirstPrompt).toHaveBeenCalledTimes(2)
   })
 
   it.each([

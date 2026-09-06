@@ -191,6 +191,10 @@ export class ClientSessions implements ISessions {
   readonly list: SnapshotStore<SessionListState>
   /** The object-layer instance cluster and frame dispatch entry. */
   private readonly manager: SessionManager
+  /** Successful and in-flight first-prompt reads shared by every title surface. */
+  private readonly firstPromptRequests = new Map<SessionId, Promise<string | undefined>>()
+  /** Root-owned cancellation for cold reads that outlive a title component. */
+  private readonly firstPromptAbort = new AbortController()
   /**
    * Persisted selection cell (the durable half of `list.current`). Private on
    * purpose: reads go through the list snapshot; writes through {@link
@@ -220,7 +224,7 @@ export class ClientSessions implements ISessions {
    */
   constructor(
     private readonly rootCtx: Context,
-    remote: SessionRemotes,
+    private readonly remote: SessionRemotes,
   ) {
     this.selection = createSnapshotStore<SessionSelection>(
       {},
@@ -250,6 +254,7 @@ export class ClientSessions implements ISessions {
       this.followCurrent()
     })
     rootCtx.effect(() => async () => {
+      this.firstPromptAbort.abort()
       disposeStageFollower()
       disposeManagerProjection()
       const scopes = [...this.scopes]
@@ -337,6 +342,30 @@ export class ClientSessions implements ISessions {
     signal: AbortSignal,
   ): Promise<RemoteResult<{ items: SessionSearchResultItem[]; hasMore: boolean }>> {
     return this.manager.search(query, signal)
+  }
+
+  /**
+   * Resolve the first human prompt for a title preview, sharing cold reads.
+   * @param sessionId - Session whose first prompt is required.
+   * @returns bounded text, or undefined when the Session has no textual first prompt.
+   */
+  firstPrompt(sessionId: SessionId): Promise<string | undefined> {
+    const projected = this.list.getSnapshot().byId[sessionId]
+      ?.projectionValues?.sessionListMetadata?.firstPrompt
+    if (projected !== undefined && projected !== null) {
+      return Promise.resolve(projected === '' ? undefined : projected)
+    }
+    const existing = this.firstPromptRequests.get(sessionId)
+    if (existing !== undefined) return existing
+    const request = this.remote.session.firstPrompt({ sessionId }, this.firstPromptAbort.signal).then((result) => {
+      if (!result.ok) throw result.error
+      return result.value.text === null || result.value.text === '' ? undefined : result.value.text
+    })
+    this.firstPromptRequests.set(sessionId, request)
+    void request.catch(() => {
+      if (this.firstPromptRequests.get(sessionId) === request) this.firstPromptRequests.delete(sessionId)
+    })
+    return request
   }
 
   /**
