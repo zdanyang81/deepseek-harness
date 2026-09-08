@@ -108,6 +108,19 @@ describe('WorkspaceBrowser.module.css list', () => {
       .toBe('var(--dsw-alias-interactive-bg-hover)')
   })
 
+  it('makes the attention-view switch distinct from pagination with primary text and a visible focus ring', () => {
+    const hint = declarations('.attentionHint')
+    expect(hint?.get('height')).toBe('32px')
+    expect(hint?.get('font-weight')).toBe('600')
+    expect(hint?.get('color')).toBe('var(--dsw-alias-label-primary)')
+    expect(hint?.get('border')).toBe('1px solid var(--dsw-alias-border-l2)')
+    expect(hint?.get('background')).toBe('var(--dsw-alias-interactive-bg-hover)')
+    expect(hint?.get('cursor')).toBe('pointer')
+    expect(declarations('.attentionHint:hover')?.get('background')).toBe('var(--dsw-alias-interactive-bg-active)')
+    expect(declarations('.attentionHint:focus-visible')?.get('outline')).toBe('2px solid var(--dsw-alias-label-primary)')
+    expect(declarations('.attentionHint:focus-visible')?.get('outline-offset')).toBe('2px')
+  })
+
   it('pins both rail controls to the shared left anchor during the column slide', () => {
     expect(declarations('.rail .sectionHeader')?.get('justify-content')).toBe('flex-start')
     expect(declarations('.rail .iconButton')?.get('width')).toBe('36px')

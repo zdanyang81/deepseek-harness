@@ -991,7 +991,7 @@ export function WorkspaceBrowser({
       {wide && normalizedQuery === '' && groupBy === 'workspace' && (
         <button
           type="button"
-          className={css.sessionOverflowButton}
+          className={css.attentionHint}
           onClick={() => { actions.setGroupBy('flat') }}
         >
           切到时间列表使用关注线
