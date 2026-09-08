@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createRef } from 'react'
 import { AttentionDivider } from '../src/client/AttentionDivider.tsx'
-import { attentionCutoff, attentionIndex, attentionScrollSpeed, cutoffAtGap } from '../src/client/attention.ts'
+import { type AttentionBoundary, attentionCutoff, attentionIndex, attentionScrollSpeed, cutoffAtGap } from '../src/client/attention.ts'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
 
 const rows = [{ id: 'a', updatedAt: 300 }, { id: 'b', updatedAt: 200 }, { id: 'c', updatedAt: 100 }]
@@ -31,10 +31,10 @@ function pointer(target: EventTarget, type: string, x = 150, y = 116, id = 1) {
   act(() => { target.dispatchEvent(e) })
 }
 
-function mount(cutoff = 200, more = false) {
+function mount(cutoff: AttentionBoundary = 200, more = false, initialRows = rows) {
   const listRef = createRef<HTMLDivElement>()
   const commit = vi.fn()
-  const content = (items = rows) => <div ref={listRef}>
+  const content = (items = initialRows) => <div ref={listRef}>
     <AttentionDivider rows={items} listRef={listRef} cutoff={cutoff} commit={commit} hasMore={more} />
     {items.map(row => <div key={row.id} data-attention-row={row.id}>{row.id}</div>)}
   </div>
@@ -59,18 +59,30 @@ describe('timestamp partition', () => {
   it('maps top, middle and bottom gaps to timestamps, never persistent row indexes', () => {
     expect(cutoffAtGap(rows, 0, 1000)).toBe(1000)
     expect(cutoffAtGap(rows, 0, 100)).toBe(300)
-    expect(cutoffAtGap(rows, 1, 1000)).toBe(200)
-    expect(cutoffAtGap(rows, 3, 1000)).toBe(99)
+    expect(cutoffAtGap(rows, 1, 1000)).toEqual({ timestamp: 200, id: 'b', side: 'before' })
+    expect(cutoffAtGap(rows, 3, 1000)).toEqual({ timestamp: 100, id: 'c', side: 'after' })
     expect(cutoffAtGap([], 0, 1000)).toBe(1000)
   })
-  it('cannot split equal timestamps; middle-gap ties snap before the entire cohort', () => {
-    const tied = [{ updatedAt: 300 }, { updatedAt: 200 }, { updatedAt: 200 }, { updatedAt: 100 }]
-    expect(attentionIndex(tied, cutoffAtGap(tied, 2, 1000))).toBe(1)
-    expect(attentionIndex(tied, cutoffAtGap(tied, 3, 1000))).toBe(3)
+  it('resolves every gap in equal timestamps exactly, including first and last', () => {
+    const tied = ['a', 'b', 'c', 'd'].map(id => ({ id, updatedAt: 200 }))
+    for (let gap = 0; gap <= tied.length; gap++) {
+      expect(attentionIndex(tied, cutoffAtGap(tied, gap, 1000))).toBe(gap)
+    }
   })
-  it('treats invalid/legacy persisted values as all-attention', () => {
-    for (const value of [null, undefined, NaN, Infinity, -1, '200', 9e15]) expect(attentionCutoff(value)).toBe(0)
-    expect(attentionCutoff(200)).toBe(200)
+  it('keeps identity boundaries stable after anchor removal and new activity', () => {
+    const tied = ['a', 'b', 'c'].map(id => ({ id, updatedAt: 200 }))
+    const cutoff = cutoffAtGap(tied, 1, 1000)
+    expect(attentionIndex([tied[0]!, tied[2]!], cutoff)).toBe(1)
+    expect(attentionIndex([{ id: 'c', updatedAt: 201 }, tied[0]!, tied[1]!], cutoff)).toBe(2)
+    expect(attentionIndex([{ id: 'aa', updatedAt: 200 }, tied[1]!, tied[2]!], cutoff)).toBe(1)
+  })
+  it('initializes invalid/absent state to the fixed mount time but preserves legacy numbers', () => {
+    for (const value of [null, undefined, NaN, Infinity, -1, '200', 9e15, {}, { timestamp: 200, id: '', side: 'before' }]) {
+      expect(attentionCutoff(value, 1000)).toBe(1000)
+    }
+    expect(attentionCutoff(200, 1000)).toBe(200)
+    const cutoff = { timestamp: 200, id: 'b', side: 'before' } as const
+    expect(attentionCutoff(cutoff, 1000)).toBe(cutoff)
   })
   it('persists just the cutoff through the actual declared store', () => {
     const first = createWorkspaceViewStore().create()
@@ -88,6 +100,23 @@ describe('timestamp partition', () => {
 })
 
 describe('divider pointer ownership', () => {
+  it('held drag commits the exact middle gap between same-time rows', () => {
+    const tied = ['a', 'b', 'c'].map(id => ({ id, updatedAt: 200 }))
+    const b = mount(1000, false, tied)
+    pointer(b.button, 'pointerdown')
+    act(() => vi.advanceTimersByTime(450))
+    pointer(window, 'pointermove', 150, 170)
+    pointer(window, 'pointerup', 150, 170)
+    const expected = { timestamp: 200, id: 'c', side: 'before' }
+    expect(b.commit).toHaveBeenCalledExactlyOnceWith(expected)
+    expect(attentionIndex(tied, expected as AttentionBoundary)).toBe(2)
+  })
+  it('keyboard advances one row within a same-time cohort', () => {
+    const tied = ['a', 'b', 'c'].map(id => ({ id, updatedAt: 200 }))
+    const b = mount({ timestamp: 200, id: 'b', side: 'before' }, false, tied)
+    fireEvent.keyDown(b.button, { key: 'ArrowDown' })
+    expect(b.commit).toHaveBeenLastCalledWith({ timestamp: 200, id: 'c', side: 'before' })
+  })
   it('short tap and movement before 450ms never persist', () => {
     const b = mount()
     pointer(b.button, 'pointerdown')
@@ -117,7 +146,7 @@ describe('divider pointer ownership', () => {
     expect(b.commit).not.toHaveBeenCalled()
     pointer(window, 'pointerup', 150, 170)
     pointer(window, 'pointerup', 150, 170)
-    expect(b.commit).toHaveBeenCalledExactlyOnceWith(100)
+    expect(b.commit).toHaveBeenCalledExactlyOnceWith({ timestamp: 100, id: 'c', side: 'before' })
     expect(vi.getTimerCount()).toBe(0)
   })
   it.each(['pointercancel', 'lostpointercapture', 'blur', 'Escape'])('%s cancels without persisting', (kind) => {
@@ -186,10 +215,10 @@ describe('divider pointer ownership', () => {
     fireEvent.click(b.button)
     expect(click).not.toHaveBeenCalled()
     fireEvent.keyDown(b.button, { key: 'ArrowDown' })
-    expect(b.commit).toHaveBeenLastCalledWith(100)
+    expect(b.commit).toHaveBeenLastCalledWith({ timestamp: 100, id: 'c', side: 'before' })
     fireEvent.keyDown(b.button, { key: 'Home' })
     expect(b.commit).toHaveBeenLastCalledWith(1000)
     fireEvent.keyDown(b.button, { key: 'End' })
-    expect(b.commit).toHaveBeenLastCalledWith(99)
+    expect(b.commit).toHaveBeenLastCalledWith({ timestamp: 100, id: 'c', side: 'after' })
   })
 })

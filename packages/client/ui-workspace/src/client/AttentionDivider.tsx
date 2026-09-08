@@ -1,13 +1,13 @@
 /** A list-owned pointer gesture. Only pointerup after a held, moved drag commits time. */
 import { type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useRef, useState } from 'react'
-import { attentionIndex, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
+import { type AttentionBoundary, attentionIndex, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
 import css from './AttentionDivider.module.css'
 
 type Props = {
   rows: readonly { readonly id: string; readonly updatedAt: number }[]
   listRef: RefObject<HTMLDivElement>
-  cutoff: number
-  commit: (cutoff: number) => void
+  cutoff: AttentionBoundary
+  commit: (cutoff: AttentionBoundary) => void
   hasMore: boolean
 }
 
@@ -18,7 +18,7 @@ type Gesture = {
   lastY: number
   active: boolean
   moved: boolean
-  cutoff: number
+  cutoff: AttentionBoundary
   timer: ReturnType<typeof setTimeout>
   frame: number
   dispose: () => void
@@ -26,7 +26,7 @@ type Gesture = {
 
 /** Render one stable handle over the gap; moving it never reorders or owns session nodes. */
 export function AttentionDivider({ rows, listRef, cutoff, commit, hasMore }: Props) {
-  const [preview, setPreview] = useState<number | null>(null)
+  const [preview, setPreview] = useState<AttentionBoundary | null>(null)
   const [top, setTop] = useState(12)
   const gesture = useRef<Gesture | null>(null)
   const latest = useRef({ rows, cutoff, commit })
@@ -124,6 +124,7 @@ export function AttentionDivider({ rows, listRef, cutoff, commit, hasMore }: Pro
     }
     function up(e: PointerEvent): void {
       if (e.pointerId !== g.pointerId) return
+      if (latest.current.rows.map(row => `${row.id}:${row.updatedAt}`).join('|') !== signature) { cancel(); return }
       const bounds = scroller.getBoundingClientRect()
       const inside = e.clientX >= bounds.left && e.clientX <= bounds.right
         && e.clientY >= bounds.top && e.clientY <= bounds.bottom
@@ -146,16 +147,17 @@ export function AttentionDivider({ rows, listRef, cutoff, commit, hasMore }: Pro
     button.addEventListener('lostpointercapture', abort)
   }
 
-  const beyondPage = index === rows.length && hasMore && cutoff < (rows[rows.length - 1]?.updatedAt ?? 0)
+  const beyondPage = index === rows.length && hasMore && attentionTime(cutoff) < (rows[rows.length - 1]?.updatedAt ?? 0)
   return (
-    <div className={css.divider} style={{ top }} data-attention-cutoff={effective} data-attention-index={index}>
+    <div className={css.divider} style={{ top }} data-attention-cutoff={attentionTime(effective)}
+      data-attention-boundary={JSON.stringify(effective)} data-attention-index={index}>
       <span className={css.line} />
       <button
         type="button"
         className={css.handle}
         aria-label="关注分界线：上方需关注，下方可忽略；长按后拖动"
         aria-pressed={preview !== null}
-        title={beyondPage ? '分界点在更早历史中；继续加载可定位。长按可重新设置。' : '上方需关注 · 下方可忽略。长按450毫秒后拖动；相同更新时间一起移动。'}
+        title={beyondPage ? '分界点在更早历史中；继续加载可定位。长按可重新设置。' : '上方需关注 · 下方可忽略。长按450毫秒后拖动；同一时间按会话ID稳定分界。'}
         onPointerDown={down}
         onClickCapture={(e) => { e.preventDefault(); e.stopPropagation() }}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
@@ -163,10 +165,7 @@ export function AttentionDivider({ rows, listRef, cutoff, commit, hasMore }: Pro
           if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown' && e.key !== 'Home' && e.key !== 'End') return
           e.preventDefault()
           cancel()
-          let gap = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length : index + (e.key === 'ArrowUp' ? -1 : 1)
-          if (e.key === 'ArrowDown') {
-            while (gap < rows.length && rows[gap]?.updatedAt === rows[index]?.updatedAt) gap++
-          }
+          const gap = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length : index + (e.key === 'ArrowUp' ? -1 : 1)
           commit(cutoffAtGap(rows, gap, Date.now()))
         }}
       >

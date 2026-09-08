@@ -8,6 +8,7 @@ import type {
 import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type { WorkspaceBrowserProps } from '../src/client/contract/slots.ts'
+import type { AttentionBoundary } from '../src/client/attention.ts'
 import { createWorkspaceViewStore, FLAT_SESSION_ORDER_KEY } from '../src/client/stores.ts'
 import { UNGROUPED_KEY } from '../src/client/tree.ts'
 import { WorkspaceBrowser } from '../src/client/WorkspaceBrowser.tsx'
@@ -549,8 +550,9 @@ describe('WorkspaceBrowser', () => {
     const b = mount({ useSessions: hook(sessionState([summary('newest', 300), summary('old', 100)])) })
     act(() => { b.store.actions.setGroupBy('flat') })
     const handle = screen.getByRole('button', { name: /关注分界线/ })
-    fireEvent.keyDown(handle, { key: 'ArrowUp' })
-    expect(b.store.getSnapshot().attentionCutoff).toBe(100)
+    fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    const boundary = { timestamp: 100, id: 'old', side: 'before' }
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(boundary)
     const divider = handle.closest('[data-attention-index]') as HTMLElement
     expect(divider.getAttribute('data-attention-index')).toBe('1')
     expect(screen.getAllByRole('treeitem')[1]?.textContent).toContain('old')
@@ -559,10 +561,11 @@ describe('WorkspaceBrowser', () => {
     expect(screen.getAllByRole('treeitem')[0]?.textContent).toContain('old')
     expect(divider.getAttribute('data-attention-index')).toBe('2')
     expect(divider.getAttribute('data-attention-cutoff')).toBe('100')
-    expect(b.store.getSnapshot().attentionCutoff).toBe(100)
+    expect(divider.getAttribute('data-attention-boundary')).toBe(JSON.stringify(boundary))
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(boundary)
     b.view.unmount()
     const restored = mount({ useSessions: hook(renewed) })
-    expect(restored.store.getSnapshot().attentionCutoff).toBe(100)
+    expect(restored.store.getSnapshot().attentionCutoff).toEqual(boundary)
     expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('2')
   })
 
@@ -571,12 +574,13 @@ describe('WorkspaceBrowser', () => {
     const initial = [summary('newest', 300), summary('recent', 200)]
     const b = mount({ useSessions: hook(sessionState(initial, { hasMore: true })), loadMoreSessions })
     act(() => { b.store.actions.setGroupBy('flat') })
-    fireEvent.keyDown(screen.getByRole('button', { name: /关注分界线/ }), { key: 'ArrowUp' })
-    expect(b.store.getSnapshot().attentionCutoff).toBe(200)
+    fireEvent.keyDown(screen.getByRole('button', { name: /关注分界线/ }), { key: 'ArrowDown' })
+    const boundary = { timestamp: 200, id: 'recent', side: 'before' }
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(boundary)
     fireEvent.click(screen.getByRole('button', { name: '加载更多会话' }))
     expect(loadMoreSessions).toHaveBeenCalledTimes(1)
     rerender(b, { useSessions: hook(sessionState([...initial, summary('older-page', 100)], { hasMore: false })) })
-    expect(b.store.getSnapshot().attentionCutoff).toBe(200)
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(boundary)
     expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('1')
     expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
       expect.stringContaining('newest'), expect.stringContaining('recent'), expect.stringContaining('older-page'),
@@ -603,14 +607,121 @@ describe('WorkspaceBrowser', () => {
     expect(b.store.getSnapshot().attentionCutoff).toBe(100)
   })
 
-  it('keeps equal timestamp rows together on either side of the native divider', () => {
+  it('moves one exact gap across equal timestamp rows and persists stable identity rather than an index', () => {
     const b = mount({ useSessions: hook(sessionState([summary('b', 100), summary('newest', 300), summary('a', 100)])) })
     act(() => { b.store.actions.setGroupBy('flat'); b.store.actions.setAttentionCutoff(100) })
     const handle = screen.getByRole('button', { name: /关注分界线/ })
-    expect(handle.closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('1')
+    const divider = handle.closest('[data-attention-index]') as HTMLElement
+    expect(divider.getAttribute('data-attention-index')).toBe('1')
     fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    expect(divider.getAttribute('data-attention-index')).toBe('2')
+    const middle = { timestamp: 100, id: 'b', side: 'before' }
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(middle)
+    expect(divider.getAttribute('data-attention-cutoff')).toBe('100')
+    expect(divider.getAttribute('data-attention-boundary')).toBe(JSON.stringify(middle))
+    fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    expect(divider.getAttribute('data-attention-index')).toBe('3')
+    expect(b.store.getSnapshot().attentionCutoff).toEqual({ timestamp: 100, id: 'b', side: 'after' })
+    fireEvent.keyDown(handle, { key: 'ArrowUp' })
+    expect(divider.getAttribute('data-attention-index')).toBe('2')
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(middle)
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('newest'), expect.stringContaining('a'), expect.stringContaining('b'),
+    ])
+  })
+
+  it.each(['new viewing store', 'legacy store without cutoff'])('initializes %s to current time once and preserves it across remounts', (kind) => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    try {
+      if (kind === 'legacy store without cutoff') {
+        const legacy = createWorkspaceViewStore().create().getSnapshot()
+        localStorage.setItem('dsh.workspace.view.v5', JSON.stringify({ ...legacy, attentionCutoff: undefined }))
+      }
+      const store = createWorkspaceViewStore().create()
+      const persist = vi.fn((value: AttentionBoundary) => { store.actions.setAttentionCutoff(value) })
+      const items = [summary('recent', 300), summary('old', 100)]
+      const b = mount({
+        useSessions: hook(sessionState(items)),
+        useStore: bindSnapshotSelector(store),
+        actions: { ...store.actions, setAttentionCutoff: persist },
+      })
+      expect(persist).toHaveBeenCalledExactlyOnceWith(1_000)
+      expect(store.getSnapshot().attentionCutoff).toBe(1_000)
+      act(() => { store.actions.setGroupBy('flat') })
+      expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('0')
+      clock.mockReturnValue(2_000)
+      rerender(b, {})
+      expect(persist).toHaveBeenCalledTimes(1)
+      expect(store.getSnapshot().attentionCutoff).toBe(1_000)
+      b.view.unmount()
+      const restored = mount({ useSessions: hook(sessionState(items)) })
+      expect(restored.store.getSnapshot().attentionCutoff).toBe(1_000)
+      expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-cutoff')).toBe('1000')
+      rerender(restored, { useSessions: hook(sessionState([summary('renewed', 1_500), ...items])) })
+      expect(restored.store.getSnapshot().attentionCutoff).toBe(1_000)
+      expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('1')
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it.each([0, 125])('keeps valid legacy numeric cutoff %s instead of replacing it with mount time', (cutoff) => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    try {
+      const legacy = createWorkspaceViewStore().create()
+      legacy.actions.setAttentionCutoff(cutoff)
+      legacy.actions.setGroupBy('flat')
+      const b = mount({ useSessions: hook(sessionState([summary('recent', 300), summary('old', 100)])) })
+      expect(b.store.getSnapshot().attentionCutoff).toBe(cutoff)
+      const divider = screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]') as HTMLElement
+      expect(divider.getAttribute('data-attention-index')).toBe(cutoff === 0 ? '2' : '1')
+      expect(divider.getAttribute('data-attention-boundary')).toBe(JSON.stringify(cutoff))
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('keeps a persisted tie gap stable when its identity disappears and older pages add neighboring IDs', () => {
+    const initial = [summary('newest', 300), summary('c', 100), summary('b', 100), summary('a', 100)]
+    const b = mount({ useSessions: hook(sessionState(initial)) })
+    act(() => { b.store.actions.setGroupBy('flat'); b.store.actions.setAttentionCutoff(100) })
+    const handle = screen.getByRole('button', { name: /关注分界线/ })
+    fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    const boundary = { timestamp: 100, id: 'b', side: 'before' }
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(boundary)
+    const removed = initial.filter(row => row.id !== sid('b'))
+    rerender(b, { useSessions: hook(sessionState(removed)) })
+    expect(screen.queryByText('b')).toBeNull()
+    expect(handle.closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('2')
+    const paged = [...removed, summary('aa', 100), summary('older', 50)]
+    rerender(b, { useSessions: hook(sessionState(paged)) })
     expect(handle.closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('3')
-    expect(b.store.getSnapshot().attentionCutoff).toBe(99)
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(boundary)
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('newest'), expect.stringContaining('a'), expect.stringContaining('aa'),
+      expect.stringContaining('c'), expect.stringContaining('older'),
+    ])
+    b.view.unmount()
+    const restored = mount({ useSessions: hook(sessionState(paged)) })
+    expect(restored.store.getSnapshot().attentionCutoff).toEqual(boundary)
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('3')
+  })
+
+  it('moves a tie anchor above its saved gap on activity without dragging its equal-time neighbors across', () => {
+    const items = [summary('newest', 300), summary('a', 100), summary('b', 100), summary('c', 100)]
+    const b = mount({ useSessions: hook(sessionState(items)) })
+    act(() => { b.store.actions.setGroupBy('flat'); b.store.actions.setAttentionCutoff(100) })
+    const handle = screen.getByRole('button', { name: /关注分界线/ })
+    fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    const boundary = { timestamp: 100, id: 'b', side: 'before' }
+    expect(handle.closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('2')
+    rerender(b, { useSessions: hook(sessionState(items.map(row => row.id === sid('b') ? summary('b', 400) : row))) })
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('b'), expect.stringContaining('newest'), expect.stringContaining('a'), expect.stringContaining('c'),
+    ])
+    expect(handle.closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('3')
+    expect(b.store.getSnapshot().attentionCutoff).toEqual(boundary)
+    expect(handle.closest('[data-attention-boundary]')?.getAttribute('data-attention-boundary')).toBe(JSON.stringify(boundary))
   })
 
   it('archives a session from the row menu and hides archived rows in both modes', async () => {

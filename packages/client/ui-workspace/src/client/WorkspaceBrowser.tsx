@@ -26,7 +26,7 @@ import { FLAT_SESSION_ORDER_KEY } from './stores.ts'
 import { WorkspacePickFlow } from './WorkspacePicker.tsx'
 import css from './WorkspaceBrowser.module.css'
 import { AttentionDivider } from './AttentionDivider.tsx'
-import { attentionCutoff } from './attention.ts'
+import { type AttentionBoundary, attentionCutoff } from './attention.ts'
 
 /**
  * Column slide length (--ds-transition-duration-slow): rail-search focus waits it out —
@@ -491,7 +491,7 @@ function FlatList({
   cutoff, setCutoff, t,
 }: Pick<SessionTreeProps,
   'useSessions' | 'open' | 'loadMoreSessions' | 'forkSession' | 'onSessionRename' | 'onSessionArchive' | 'archivedSessionIds' | 't'
-> & { cutoff: number; setCutoff: (value: number) => void }) {
+> & { cutoff: AttentionBoundary; setCutoff: (value: AttentionBoundary) => void }) {
   const list = useSessions(s => s) as PageableSessionListState
   const rows = useMemo(() => deriveFlat(list, archivedSessionIds), [list, archivedSessionIds])
   const autoLoad = useSessionCatalogAutoLoad({
@@ -646,7 +646,12 @@ export function WorkspaceBrowser({
   const directoryFlowAvailable = useDirectoryFlow(occupied => occupied)
   const groupBy = useStore(s => s.groupBy)
   const groupExpansion = useStore(s => s.groupExpansion)
-  const cutoff = attentionCutoff(useStore(s => s.attentionCutoff))
+  const initialCutoff = useRef(Date.now())
+  const storedCutoff = useStore(s => s.attentionCutoff)
+  const cutoff = attentionCutoff(storedCutoff, initialCutoff.current)
+  useEffect(() => {
+    if (storedCutoff !== cutoff) actions.setAttentionCutoff(cutoff)
+  }, [storedCutoff, cutoff, actions.setAttentionCutoff])
   useEffect(() => {
     if (workspacePhase !== 'ready') return
     actions.retainAccountKeys([
