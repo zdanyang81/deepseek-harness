@@ -44,6 +44,22 @@ export function cutoffAtGap(rows: readonly TimedRow[], gap: number, now: number)
   return row === undefined ? now : { timestamp: row.updatedAt, id: row.id, side: 'before' }
 }
 
+type VerticalRect = { readonly top: number; readonly bottom: number }
+
+/**
+ * Hit-test in gap-free coordinates so moving the reserved track cannot move the target.
+ * @param rows - current viewport rectangles of the ordered Session rows.
+ * @param gap - current viewport rectangle of the divider's reserved track.
+ * @param pointerY - current pointer position in viewport coordinates.
+ * @returns the insertion gap before a row, or after the final row.
+ */
+export function attentionPointerGap(rows: readonly VerticalRect[], gap: VerticalRect, pointerY: number): number {
+  const withoutGap = (y: number): number => y <= gap.top ? y : Math.max(gap.top, y - (gap.bottom - gap.top))
+  const y = withoutGap(pointerY)
+  const index = rows.findIndex(row => y < withoutGap((row.top + row.bottom) / 2))
+  return index < 0 ? rows.length : index
+}
+
 /** Edge speed in pixels/frame; only the owned list scrolls. */
 export function attentionScrollSpeed(y: number, top: number, bottom: number): number {
   const edge = Math.min(48, (bottom - top) / 3)

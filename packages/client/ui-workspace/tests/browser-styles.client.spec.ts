@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 const css = readFileSync(fileURLToPath(new URL('../src/client/WorkspaceBrowser.module.css', import.meta.url)), 'utf8')
 const rowsCss = readFileSync(fileURLToPath(new URL('../src/client/rows/Rows.module.css', import.meta.url)), 'utf8')
+const attentionCss = readFileSync(fileURLToPath(new URL('../src/client/AttentionDivider.module.css', import.meta.url)), 'utf8')
 
 /**
  * Declarations of one selector rule, keyed by property with whitespace collapsed.
@@ -37,6 +38,22 @@ describe('WorkspaceBrowser.module.css list', () => {
   const root = declarations('.root')
   const listArea = declarations('.listArea')
   const list = declarations('.list')
+
+  it('reserves a real 32px track around the 24px handle rather than overlaying Session titles', () => {
+    const divider = declarationsFrom(attentionCss, '.divider')
+    const handle = declarationsFrom(attentionCss, '.handle')
+    expect(declarations('.flatList')?.get('display')).toBe('grid')
+    expect(declarations('.flatList')?.get('grid-template-columns')).toBe('minmax(0, 1fr)')
+    expect(declarations('.flatList')?.get('align-content')).toBe('start')
+    expect(divider?.get('position')).toBe('relative')
+    expect(divider?.get('height')).toBe('32px')
+    expect(divider?.get('grid-row')).toBe('var(--attention-gap-row)')
+    expect(divider?.get('transform')).toBeUndefined()
+    expect(handle?.get('height')).toBe('24px')
+    expect(handle?.get('box-sizing')).toBe('border-box')
+    expect(declarations('.flatList > [data-attention-row]')?.get('grid-row')).toBe('var(--attention-row)')
+    expect(declarations('.flatList > .sessionOverflowButton')?.get('grid-row')).toBe('var(--attention-footer-row)')
+  })
 
   it('is the scrolling region', () => {
     expect(list).toBeDefined()

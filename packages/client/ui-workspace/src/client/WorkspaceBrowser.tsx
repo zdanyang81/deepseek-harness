@@ -9,7 +9,7 @@
  * menu in between; the flow and its error dialog live in WorkspacePicker
  * (same package — direct composition, no slot between them).
  */
-import { type UIEvent, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, type UIEvent, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   Button, IconCloseFill14, IconPersonalizationOutline16,
@@ -26,7 +26,7 @@ import { FLAT_SESSION_ORDER_KEY } from './stores.ts'
 import { WorkspacePickFlow } from './WorkspacePicker.tsx'
 import css from './WorkspaceBrowser.module.css'
 import { AttentionDivider } from './AttentionDivider.tsx'
-import { type AttentionBoundary, attentionCutoff } from './attention.ts'
+import { type AttentionBoundary, attentionCutoff, attentionIndex } from './attention.ts'
 
 /**
  * Column slide length (--ds-transition-duration-slow): rail-search focus waits it out —
@@ -494,6 +494,9 @@ function FlatList({
 > & { cutoff: AttentionBoundary; setCutoff: (value: AttentionBoundary) => void }) {
   const list = useSessions(s => s) as PageableSessionListState
   const rows = useMemo(() => deriveFlat(list, archivedSessionIds), [list, archivedSessionIds])
+  // The list owns one transient boundary shared by its reserved track and stable handle.
+  const [preview, setPreview] = useState<AttentionBoundary | null>(null)
+  const gapIndex = attentionIndex(rows, preview ?? cutoff)
   const autoLoad = useSessionCatalogAutoLoad({
     hasMore: list.hasMore === true,
     loadingMore: list.loadingMore === true,
@@ -506,7 +509,7 @@ function FlatList({
       <div
         ref={autoLoad.listRef}
         className={clsx(css.list, css.flatList)}
-        style={{ position: 'relative', paddingTop: 14, paddingBottom: 14 }}
+        style={{ '--attention-footer-row': rows.length + 2 } as CSSProperties}
         role="tree"
         aria-label={t('section.sessions')}
         onScroll={autoLoad.onScroll}
@@ -514,11 +517,12 @@ function FlatList({
       >
         {rows.length === 0 && <div className={css.empty}>{t('empty.none')}</div>}
         {rows.length > 0 && (
-          <AttentionDivider rows={rows} listRef={autoLoad.listRef} cutoff={cutoff}
+          <AttentionDivider rows={rows} listRef={autoLoad.listRef} cutoff={cutoff} preview={preview} setPreview={setPreview}
             commit={setCutoff} hasMore={list.hasMore === true} />
         )}
-        {rows.map(node => (
-          <div key={node.id} data-attention-row={node.id}>
+        {rows.map((node, rowIndex) => (
+          <div key={node.id} data-attention-row={node.id}
+            style={{ '--attention-row': rowIndex + 1 + (rowIndex >= gapIndex ? 1 : 0) } as CSSProperties}>
             <SessionNodeItem
               node={node} currentId={list.current} now={now} onOpen={open}
               onRename={onSessionRename} onFork={forkSession} onArchive={onSessionArchive} flat t={t}

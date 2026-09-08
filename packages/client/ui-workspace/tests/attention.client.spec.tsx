@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { createRef } from 'react'
+import { type CSSProperties, createRef, useState } from 'react'
 import { AttentionDivider } from '../src/client/AttentionDivider.tsx'
-import { type AttentionBoundary, attentionCutoff, attentionIndex, attentionScrollSpeed, cutoffAtGap } from '../src/client/attention.ts'
+import { type AttentionBoundary, attentionCutoff, attentionIndex, attentionPointerGap, attentionScrollSpeed, cutoffAtGap } from '../src/client/attention.ts'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
 
 const rows = [{ id: 'a', updatedAt: 300 }, { id: 'b', updatedAt: 200 }, { id: 'c', updatedAt: 100 }]
@@ -25,27 +25,41 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
-function pointer(target: EventTarget, type: string, x = 150, y = 116, id = 1) {
+function pointer(target: EventTarget, type: string, x = 150, y?: number, id = 1) {
+  const bounds = target instanceof HTMLElement ? target.getBoundingClientRect() : rect(100)
   const e = new Event(type, { bubbles: true, cancelable: true })
-  Object.assign(e, { clientX: x, clientY: y, pointerId: id, isPrimary: true, button: 0, pointerType: 'touch' })
+  Object.assign(e, { clientX: x, clientY: y ?? (bounds.top + bounds.bottom) / 2, pointerId: id, isPrimary: true, button: 0, pointerType: 'touch' })
   act(() => { target.dispatchEvent(e) })
 }
 
 function mount(cutoff: AttentionBoundary = 200, more = false, initialRows = rows) {
   const listRef = createRef<HTMLDivElement>()
   const commit = vi.fn()
-  const content = (items = initialRows) => <div ref={listRef}>
-    <AttentionDivider rows={items} listRef={listRef} cutoff={cutoff} commit={commit} hasMore={more} />
-    {items.map(row => <div key={row.id} data-attention-row={row.id}>{row.id}</div>)}
-  </div>
+  const open = vi.fn()
+  function Fixture({ items }: { items: typeof rows }) {
+    const [preview, setPreview] = useState<AttentionBoundary | null>(null)
+    const gap = attentionIndex(items, preview ?? cutoff)
+    return <div ref={listRef}>
+      <AttentionDivider rows={items} listRef={listRef} cutoff={cutoff} preview={preview} setPreview={setPreview}
+        commit={commit} hasMore={more} />
+      {items.map((row, index) => (
+        <div key={row.id} data-attention-row={row.id} style={{ '--attention-row': index + 1 + (index >= gap ? 1 : 0) } as CSSProperties}
+          onClick={() => { open(row.id) }}>{row.id}</div>
+      ))}
+    </div>
+  }
+  const content = (items = initialRows) => <Fixture items={items} />
   const view = render(content())
   const list = listRef.current!
   vi.spyOn(list, 'getBoundingClientRect').mockImplementation(() => rect(0, 250))
-  list.querySelectorAll<HTMLElement>('[data-attention-row]').forEach((el, i) => {
-    vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => rect(100 + i * 32 - list.scrollTop))
+  list.querySelectorAll<HTMLElement>('[data-attention-row]').forEach((el) => {
+    vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => rect(100 + (Number(el.style.getPropertyValue('--attention-row')) - 1) * 32 - list.scrollTop))
   })
   const button = screen.getByRole('button', { name: /关注分界线/ })
-  return { view, list, commit, button, content }
+  const divider = button.closest<HTMLElement>('[data-attention-index]')!
+  vi.spyOn(divider, 'getBoundingClientRect').mockImplementation(() => rect(100 + Number(divider.dataset.attentionIndex) * 32 - list.scrollTop))
+  vi.spyOn(button, 'getBoundingClientRect').mockImplementation(() => rect(divider.getBoundingClientRect().top + 4, 24))
+  return { view, list, commit, button, divider, open, content }
 }
 
 describe('timestamp partition', () => {
@@ -105,11 +119,58 @@ describe('divider pointer ownership', () => {
     const b = mount(1000, false, tied)
     pointer(b.button, 'pointerdown')
     act(() => vi.advanceTimersByTime(450))
-    pointer(window, 'pointermove', 150, 170)
-    pointer(window, 'pointerup', 150, 170)
+    pointer(window, 'pointermove', 150, 202)
+    pointer(window, 'pointerup', 150, 202)
     const expected = { timestamp: 200, id: 'c', side: 'before' }
     expect(b.commit).toHaveBeenCalledExactlyOnceWith(expected)
     expect(attentionIndex(tied, expected as AttentionBoundary)).toBe(2)
+  })
+  it('keeps pointer targets stable when the reserved track moves, including variable row heights and scrolling', () => {
+    const heights = [34, 48, 26]
+    for (const scrollTop of [0, 60]) {
+      const geometry = (gap: number) => {
+        let top = 100 - scrollTop
+        const items = heights.map((height, index) => {
+          const rowTop = top + (index >= gap ? 32 : 0)
+          top += height
+          return { top: rowTop, bottom: rowTop + height }
+        })
+        const gapTop = 100 - scrollTop + heights.slice(0, gap).reduce((sum, height) => sum + height, 0)
+        return { items, track: { top: gapTop, bottom: gapTop + 32 } }
+      }
+      for (let gap = 0; gap <= heights.length; gap++) {
+        const original = geometry(gap)
+        for (let y = 20; y < 280; y++) {
+          const target = attentionPointerGap(original.items, original.track, y)
+          const moved = geometry(target)
+          expect(attentionPointerGap(moved.items, moved.track, y)).toBe(target)
+        }
+      }
+    }
+  })
+  it('keeps the held handle and capture stable as its real track changes, then restores the saved gap on cancellation', () => {
+    const b = mount()
+    const capture = vi.spyOn(b.button, 'setPointerCapture')
+    const release = vi.spyOn(b.button, 'releasePointerCapture')
+    vi.spyOn(b.button, 'hasPointerCapture').mockReturnValue(true)
+    const savedTrack = b.divider.style.getPropertyValue('--attention-gap-row')
+    pointer(b.button, 'pointerdown')
+    act(() => vi.advanceTimersByTime(450))
+    pointer(window, 'pointermove', 150, 202)
+    expect(b.divider.dataset.attentionIndex).toBe('2')
+    expect(b.divider.style.getPropertyValue('--attention-gap-row')).toBe('3')
+    for (let i = 0; i < 4; i++) pointer(window, 'pointermove', 150, 202)
+    expect(b.divider.dataset.attentionIndex).toBe('2')
+    expect(screen.getByRole('button', { name: /关注分界线/ })).toBe(b.button)
+    expect(capture).toHaveBeenCalledTimes(1)
+    expect(release).not.toHaveBeenCalled()
+    pointer(window, 'pointercancel')
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(b.divider.style.getPropertyValue('--attention-gap-row')).toBe(savedTrack)
+    expect(b.divider.dataset.attentionIndex).toBe('1')
+    expect(b.commit).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('b'))
+    expect(b.open).toHaveBeenCalledExactlyOnceWith('b')
   })
   it('keyboard advances one row within a same-time cohort', () => {
     const tied = ['a', 'b', 'c'].map(id => ({ id, updatedAt: 200 }))
@@ -124,7 +185,7 @@ describe('divider pointer ownership', () => {
     pointer(window, 'pointerup')
     expect(b.commit).not.toHaveBeenCalled()
     pointer(b.button, 'pointerdown')
-    pointer(window, 'pointermove', 150, 140)
+    pointer(window, 'pointermove', 150, 180)
     act(() => vi.advanceTimersByTime(500))
     pointer(window, 'pointerup', 150, 180)
     expect(b.commit).not.toHaveBeenCalled()
@@ -142,10 +203,10 @@ describe('divider pointer ownership', () => {
     const b = mount()
     pointer(b.button, 'pointerdown')
     act(() => vi.advanceTimersByTime(450))
-    pointer(window, 'pointermove', 150, 170)
+    pointer(window, 'pointermove', 150, 202)
     expect(b.commit).not.toHaveBeenCalled()
-    pointer(window, 'pointerup', 150, 170)
-    pointer(window, 'pointerup', 150, 170)
+    pointer(window, 'pointerup', 150, 202)
+    pointer(window, 'pointerup', 150, 202)
     expect(b.commit).toHaveBeenCalledExactlyOnceWith({ timestamp: 100, id: 'c', side: 'before' })
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -153,31 +214,39 @@ describe('divider pointer ownership', () => {
     const b = mount()
     pointer(b.button, 'pointerdown')
     act(() => vi.advanceTimersByTime(450))
-    pointer(window, 'pointermove', 150, 170)
+    pointer(window, 'pointermove', 150, 202)
+    expect(b.divider.dataset.attentionIndex).toBe('2')
     if (kind === 'Escape') fireEvent.keyDown(window, { key: 'Escape' })
     else pointer(kind === 'lostpointercapture' ? b.button : window, kind)
-    pointer(window, 'pointerup', 150, 170)
+    pointer(window, 'pointerup', 150, 202)
     expect(b.commit).not.toHaveBeenCalled()
+    expect(b.divider.dataset.attentionIndex).toBe('1')
+    expect(b.divider.style.getPropertyValue('--attention-gap-row')).toBe('2')
+    expect([...b.list.querySelectorAll<HTMLElement>('[data-attention-row]')].map(row => row.style.getPropertyValue('--attention-row'))).toEqual(['1', '3', '4'])
+    fireEvent.click(b.button)
+    expect(b.open).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('b'))
+    expect(b.open).toHaveBeenCalledExactlyOnceWith('b')
     expect(vi.getTimerCount()).toBe(0)
   })
   it('ignores other fingers and rejects a release outside the list', () => {
     const b = mount()
     pointer(b.button, 'pointerdown')
     act(() => vi.advanceTimersByTime(450))
-    pointer(window, 'pointermove', 150, 170, 2)
-    pointer(window, 'pointerup', 150, 170, 2)
+    pointer(window, 'pointermove', 150, 202, 2)
+    pointer(window, 'pointerup', 150, 202, 2)
     expect(b.button.getAttribute('aria-pressed')).toBe('true')
-    pointer(window, 'pointermove', 150, 170)
-    pointer(window, 'pointerup', 400, 170)
+    pointer(window, 'pointermove', 150, 202)
+    pointer(window, 'pointerup', 400, 202)
     expect(b.commit).not.toHaveBeenCalled()
   })
   it('new activity while dragging cancels the old geometry', () => {
     const b = mount()
     pointer(b.button, 'pointerdown')
     act(() => vi.advanceTimersByTime(450))
-    pointer(window, 'pointermove', 150, 170)
+    pointer(window, 'pointermove', 150, 202)
     b.view.rerender(b.content([{ id: 'b', updatedAt: 400 }, rows[0]!, rows[2]!]))
-    pointer(window, 'pointerup', 150, 170)
+    pointer(window, 'pointerup', 150, 202)
     expect(b.commit).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })

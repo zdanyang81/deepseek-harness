@@ -1,12 +1,14 @@
 /** A list-owned pointer gesture. Only pointerup after a held, moved drag commits time. */
-import { type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useRef, useState } from 'react'
-import { type AttentionBoundary, attentionIndex, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useRef } from 'react'
+import { type AttentionBoundary, attentionIndex, attentionPointerGap, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
 import css from './AttentionDivider.module.css'
 
 type Props = {
   rows: readonly { readonly id: string; readonly updatedAt: number }[]
   listRef: RefObject<HTMLDivElement>
   cutoff: AttentionBoundary
+  preview: AttentionBoundary | null
+  setPreview: (value: AttentionBoundary | null) => void
   commit: (cutoff: AttentionBoundary) => void
   hasMore: boolean
 }
@@ -24,10 +26,9 @@ type Gesture = {
   dispose: () => void
 }
 
-/** Render one stable handle over the gap; moving it never reorders or owns session nodes. */
-export function AttentionDivider({ rows, listRef, cutoff, commit, hasMore }: Props) {
-  const [preview, setPreview] = useState<AttentionBoundary | null>(null)
-  const [top, setTop] = useState(12)
+/** Occupy one real grid track without reparenting the handle or owning Session nodes. */
+export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, commit, hasMore }: Props) {
+  const dividerRef = useRef<HTMLDivElement>(null)
   const gesture = useRef<Gesture | null>(null)
   const latest = useRef({ rows, cutoff, commit })
   latest.current = { rows, cutoff, commit }
@@ -43,32 +44,16 @@ export function AttentionDivider({ rows, listRef, cutoff, commit, hasMore }: Pro
 
   // New activity/pages invalidate geometry while dragging, rather than committing a stale gap.
   useEffect(() => cancel, [signature, cutoff])
-  useEffect(() => {
-    const list = listRef.current
-    if (list === null) return
-    function measure(): void {
-      if (list === null) return
-      const nodes = list.querySelectorAll<HTMLElement>('[data-attention-row]')
-      const row = nodes[index]
-      const last = nodes[nodes.length - 1]
-      const origin = list.getBoundingClientRect().top - list.scrollTop + list.clientTop
-      setTop(row !== undefined ? row.getBoundingClientRect().top - origin
-        : last !== undefined ? last.getBoundingClientRect().bottom - origin : 12)
-    }
-    measure()
-    const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
-    resize?.observe(list)
-    window.addEventListener('resize', measure)
-    return () => { resize?.disconnect(); window.removeEventListener('resize', measure) }
-  }, [signature, index, listRef])
 
   function down(event: ReactPointerEvent<HTMLButtonElement>): void {
     if (event.isPrimary === false || event.button !== 0 || rows.length === 0 || gesture.current !== null) return
     event.stopPropagation()
     const button = event.currentTarget
     const list = listRef.current
-    if (list === null) return
+    const divider = dividerRef.current
+    if (list === null || divider === null) return
     const scroller = list
+    const reservedTrack = divider
     button.setPointerCapture(event.pointerId)
     const g: Gesture = {
       pointerId: event.pointerId, x: event.clientX, y: event.clientY, lastY: event.clientY,
@@ -93,11 +78,8 @@ export function AttentionDivider({ rows, listRef, cutoff, commit, hasMore }: Pro
     gesture.current = g
     function choose(): void {
       const nodes = [...scroller.querySelectorAll<HTMLElement>('[data-attention-row]')]
-      const gap = nodes.findIndex((node) => {
-        const rect = node.getBoundingClientRect()
-        return g.lastY < rect.top + rect.height / 2
-      })
-      g.cutoff = cutoffAtGap(latest.current.rows, gap < 0 ? nodes.length : gap, Date.now())
+      const gap = attentionPointerGap(nodes.map(node => node.getBoundingClientRect()), reservedTrack.getBoundingClientRect(), g.lastY)
+      g.cutoff = cutoffAtGap(latest.current.rows, gap, Date.now())
       setPreview(g.cutoff)
     }
     function tick(): void {
@@ -149,7 +131,8 @@ export function AttentionDivider({ rows, listRef, cutoff, commit, hasMore }: Pro
 
   const beyondPage = index === rows.length && hasMore && attentionTime(cutoff) < (rows[rows.length - 1]?.updatedAt ?? 0)
   return (
-    <div className={css.divider} style={{ top }} data-attention-cutoff={attentionTime(effective)}
+    <div ref={dividerRef} className={css.divider} style={{ '--attention-gap-row': index + 1 } as CSSProperties}
+      data-attention-cutoff={attentionTime(effective)}
       data-attention-boundary={JSON.stringify(effective)} data-attention-index={index}>
       <span className={css.line} />
       <button

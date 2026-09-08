@@ -570,6 +570,84 @@ describe('WorkspaceBrowser', () => {
     })
   })
 
+  it.each([
+    { position: 'top', cutoff: 1000, gap: 0, tracks: ['2', '3', '4'] },
+    { position: 'middle', cutoff: 200, gap: 1, tracks: ['1', '3', '4'] },
+    { position: 'bottom', cutoff: 0, gap: 3, tracks: ['1', '2', '3'] },
+  ])('reserves a separate $position divider track without taking adjacent Session clicks', ({ cutoff, gap, tracks }) => {
+    const open = vi.fn()
+    const b = mount({
+      useSessions: hook(sessionState([summary('a', 300), summary('b', 200), summary('c', 100)], { hasMore: true })),
+      open,
+    })
+    act(() => { b.store.actions.setAttentionCutoff(cutoff) })
+    const list = screen.getByRole('tree', { name: '会话' })
+    const handle = screen.getByRole('button', { name: /关注分界线/ })
+    const divider = handle.closest<HTMLElement>('[data-attention-index]')!
+    const wrappers = [...list.querySelectorAll<HTMLElement>('[data-attention-row]')]
+    expect(divider.parentElement).toBe(list)
+    expect(divider.dataset.attentionIndex).toBe(String(gap))
+    expect(divider.style.getPropertyValue('--attention-gap-row')).toBe(String(gap + 1))
+    expect(wrappers.map(row => row.style.getPropertyValue('--attention-row'))).toEqual(tracks)
+    expect(wrappers.every(row => !row.contains(handle))).toBe(true)
+    expect(wrappers.map(row => row.dataset.attentionRow)).toEqual(['a', 'b', 'c'])
+    expect(list.style.getPropertyValue('--attention-footer-row')).toBe('5')
+    fireEvent.click(handle)
+    expect(open).not.toHaveBeenCalled()
+    for (const id of ['a', 'b', 'c']) fireEvent.click(screen.getByText(id))
+    expect(open.mock.calls).toEqual([[sid('a')], [sid('b')], [sid('c')]])
+    fireEvent.keyDown(handle, { key: 'Home' })
+    fireEvent.keyDown(handle, { key: 'End' })
+    expect(screen.getByRole('button', { name: /关注分界线/ })).toBe(handle)
+    expect(divider.dataset.attentionIndex).toBe('3')
+  })
+
+  it('restores the real FlatList track and store on canceled preview while preserving adjacent row clicks', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16))
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+    try {
+      const open = vi.fn()
+      const b = mount({ useSessions: hook(sessionState([summary('a', 300), summary('b', 200), summary('c', 100)])), open })
+      act(() => { b.store.actions.setAttentionCutoff(200) })
+      const list = screen.getByRole('tree', { name: '会话' })
+      const handle = screen.getByRole('button', { name: /关注分界线/ })
+      const divider = handle.closest<HTMLElement>('[data-attention-index]')!
+      const rect = (top: number, height = 32) => ({
+        top, bottom: top + height, left: 0, right: 300, width: 300, height, x: 0, y: top, toJSON: () => ({}),
+      })
+      Object.assign(handle, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() })
+      vi.spyOn(list, 'getBoundingClientRect').mockImplementation(() => rect(0, 400))
+      vi.spyOn(divider, 'getBoundingClientRect').mockImplementation(() => rect(100 + Number(divider.dataset.attentionIndex) * 32))
+      for (const row of list.querySelectorAll<HTMLElement>('[data-attention-row]')) {
+        vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => rect(100 + (Number(row.style.getPropertyValue('--attention-row')) - 1) * 32))
+      }
+      const send = (target: EventTarget, type: string, y: number) => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        Object.assign(event, { clientX: 150, clientY: y, pointerId: 1, isPrimary: true, button: 0 })
+        act(() => { target.dispatchEvent(event) })
+      }
+      send(handle, 'pointerdown', 148)
+      act(() => { vi.advanceTimersByTime(450) })
+      send(window, 'pointermove', 202)
+      expect(divider.dataset.attentionIndex).toBe('2')
+      expect(b.store.getSnapshot().attentionCutoff).toBe(200)
+      send(window, 'pointermove', 202)
+      expect(divider.dataset.attentionIndex).toBe('2')
+      expect(screen.getByRole('button', { name: /关注分界线/ })).toBe(handle)
+      send(window, 'pointercancel', 202)
+      expect(divider.dataset.attentionIndex).toBe('1')
+      expect(b.store.getSnapshot().attentionCutoff).toBe(200)
+      fireEvent.click(screen.getByText('b'))
+      expect(open).toHaveBeenCalledExactlyOnceWith(sid('b'))
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('moves renewed activity above the native divider without changing the actual store cutoff', () => {
     const b = mount({ useSessions: hook(sessionState([summary('newest', 300), summary('old', 100)])) })
     act(() => { b.store.actions.setGroupBy('flat') })
