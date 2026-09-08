@@ -32,6 +32,8 @@ None; this package neither assembles nor sends a provider request.
 
 ## Known Limitations and Deferred Work
 
+- **No composed first-prompt preview** — the sidebar uses Session titles; its current runtime API and list metadata provide no first-prompt loader or field. Optional row-level display helpers do not imply an assembled capability.
+
 - **No fuzzy content search or event deep links** — the content backend uses literal token/phrase matching, and selecting a result opens the Session rather than the matching event.
 - **No Session deletion or unarchive control** — sessions can be archived, but archived sessions have no viewing or unarchive surface, and Workspace registration deletion does not delete Sessions.
 - **Pending user interaction is not aggregated into collapsed groups** — a waiting row inside a collapsed group lights no group-header indicator and becomes visible only after that group is expanded.

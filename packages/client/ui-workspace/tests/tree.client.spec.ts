@@ -46,6 +46,9 @@ describe('deriveGroups', () => {
     const grouped = deriveGroups(sessions, [workspace('project', ['awaiting'])], noArchive, view(['project']))
     expect(grouped[0]!.sessions[0]).toMatchObject({ pendingInteraction: 'plan-review', running: true })
     expect(deriveFlat(sessions, noArchive)[0]).toMatchObject({ pendingInteraction: 'plan-review', running: true })
+    // Composed rows have no first-prompt field in the current list metadata ABI.
+    expect(grouped[0]!.sessions[0]).not.toHaveProperty('firstPrompt')
+    expect(deriveFlat(sessions, noArchive)[0]).not.toHaveProperty('firstPrompt')
   })
 
   it('puts only real unaccounted Sessions in the trailing Ungrouped group', () => {

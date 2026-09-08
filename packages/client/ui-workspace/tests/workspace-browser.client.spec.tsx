@@ -99,7 +99,6 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}, groupBy?: 'worksp
     startSession: vi.fn(),
     open: vi.fn(),
     loadMoreSessions: vi.fn(async () => {}),
-    loadFirstPrompt: vi.fn(async () => undefined),
     searchSessions: vi.fn(async () => ({ items: [], hasMore: false })),
     searchResultLimit: 20,
     renameSession: vi.fn(async () => {}),
