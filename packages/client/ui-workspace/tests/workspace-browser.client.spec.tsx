@@ -82,8 +82,9 @@ function dragData(): Pick<DataTransfer, 'effectAllowed' | 'dropEffect' | 'setDat
   return { effectAllowed: 'uninitialized', dropEffect: 'none', setData: vi.fn() }
 }
 
-function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
+function mount(overrides: Partial<WorkspaceBrowserProps> = {}, groupBy?: 'workspace') {
   const store = createWorkspaceViewStore().create()
+  if (groupBy !== undefined) store.actions.setGroupBy(groupBy)
   const props: WorkspaceBrowserProps = {
     wide: true,
     expandSidebar: vi.fn(),
@@ -114,6 +115,11 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
   return { view, props, store }
 }
 
+/** Opt grouped behavior fixtures into a saved preference; mount() retains the real new-profile default. */
+function mountGrouped(overrides: Partial<WorkspaceBrowserProps> = {}) {
+  return mount(overrides, 'workspace')
+}
+
 /** Re-render with (possibly) changed props — WorkspaceBrowser has no side channel. */
 function rerender(b: ReturnType<typeof mount>, overrides: Partial<WorkspaceBrowserProps>) {
   Object.assign(b.props, overrides)
@@ -121,10 +127,28 @@ function rerender(b: ReturnType<typeof mount>, overrides: Partial<WorkspaceBrows
 }
 
 describe('WorkspaceBrowser', () => {
+  it('opens a genuinely fresh browser in the time list with its native attention line and no Manual option', () => {
+    expect(localStorage.getItem('dsh.workspace.view.v5')).toBeNull()
+    const b = mount({
+      useSessions: hook(sessionState([summary('newer', 300), summary('older', 100)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['older', 'newer'])])),
+    })
+    expect(b.store.getSnapshot().groupBy).toBe('flat')
+    expect(screen.getByRole('button', { name: /关注分界线/ })).toBeTruthy()
+    expect(screen.queryByText('alpha')).toBeNull()
+    expect(screen.queryByRole('button', { name: '切到时间列表使用关注线' })).toBeNull()
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('newer'), expect.stringContaining('older'),
+    ])
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    expect(screen.getByRole('menuitem', { name: '单列表' }).querySelector('svg')).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: '手动排序' })).toBeNull()
+  })
+
   it('workspace hover card shows a POSIX home descendant as ~', () => {
     vi.useFakeTimers()
     try {
-      mount({
+      mountGrouped({
         useWorkspaces: hook(workspaceState([{
           ...workspace('project', []),
           path: '/home/u/Documents/project',
@@ -146,7 +170,7 @@ describe('WorkspaceBrowser', () => {
     const loadMoreSessions = vi.fn(async () => {})
     const items = [summary('alpha-s', 1)]
     const ready = sessionState(items, { hasMore: true, loadingMore: false })
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(ready),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
       loadMoreSessions,
@@ -178,7 +202,7 @@ describe('WorkspaceBrowser', () => {
       .mockImplementationOnce(() => first.promise)
       .mockResolvedValue(undefined)
     const initial = [summary('alpha-s', 2)]
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState(initial, { hasMore: true, loadingMore: false })),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
       loadMoreSessions,
@@ -213,7 +237,7 @@ describe('WorkspaceBrowser', () => {
       .mockImplementationOnce(() => first.promise)
       .mockResolvedValue(undefined)
     const initial = [summary('alpha-s', 2)]
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState(initial, { hasMore: true, loadingMore: false })),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
       loadMoreSessions,
@@ -244,7 +268,7 @@ describe('WorkspaceBrowser', () => {
       { length: count },
       (_, index) => summary(`hidden-${index + 1}`, count - index),
     ))
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState(pages[0], { hasMore: false, loadingMore: false })),
       useWorkspaces: hook(workspaceState([], pages[0].map(item => item.id))),
       loadMoreSessions,
@@ -275,7 +299,7 @@ describe('WorkspaceBrowser', () => {
   it('stops an underfill batch when a resolved request makes no catalog progress', async () => {
     const loadMoreSessions = vi.fn(async () => {})
     const items = [summary('alpha-s', 1)]
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState(items, { hasMore: false, loadingMore: false })),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
       loadMoreSessions,
@@ -335,7 +359,7 @@ describe('WorkspaceBrowser', () => {
 
   it('does not load the catalog from mouse movement or search-result scrolling', () => {
     const loadMoreSessions = vi.fn(async () => {})
-    mount({
+    mountGrouped({
       useSessions: hook(sessionState([summary('alpha-s', 1)], { hasMore: true, loadingMore: false })),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
       loadMoreSessions,
@@ -355,7 +379,7 @@ describe('WorkspaceBrowser', () => {
 
   it('loads near the end of the flat list from its own scroll container', async () => {
     const loadMoreSessions = vi.fn(async () => {})
-    mount({
+    mountGrouped({
       useSessions: hook(sessionState([summary('alpha-s', 1)], { hasMore: true, loadingMore: false })),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
       loadMoreSessions,
@@ -390,9 +414,9 @@ describe('WorkspaceBrowser', () => {
     })
   })
 
-  it('renders the grouped tree by default and switches to the flat list via Group by', () => {
+  it('renders the saved grouped tree and switches to the flat list via Group by', () => {
     const sessions = sessionState([summary('alpha-s', 2), summary('beta-s', 1)])
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessions),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s']), workspace('beta', ['beta-s'])])),
     })
@@ -462,7 +486,7 @@ describe('WorkspaceBrowser', () => {
 
   it('expands a group on click and opens a session row', () => {
     const open = vi.fn()
-    mount({
+    mountGrouped({
       useSessions: hook(sessionState([summary('alpha-s', 1)])),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
       open,
@@ -477,7 +501,7 @@ describe('WorkspaceBrowser', () => {
 
   it('shows five sessions by default and clears transient show-all when the Workspace collapses', () => {
     const items = Array.from({ length: 7 }, (_, index) => summary(`session-${index + 1}`, 7 - index))
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState(items)),
       useWorkspaces: hook(workspaceState([workspace('alpha', items.map(item => item.id))])),
     })
@@ -501,7 +525,7 @@ describe('WorkspaceBrowser', () => {
 
   it('projects strict timestamps in both modes after activity and ignores legacy group order', () => {
     const initial = sessionState([summary('one', 3), summary('two', 2)])
-    const b = mount({ useSessions: hook(initial), useWorkspaces: hook(workspaceState([workspace('alpha', ['two', 'one'])])) })
+    const b = mountGrouped({ useSessions: hook(initial), useWorkspaces: hook(workspaceState([workspace('alpha', ['two', 'one'])])) })
     act(() => { b.store.actions.setSessionOrder('alpha', ['two', 'one']) })
     fireEvent.click(screen.getByText('alpha'))
     expect(screen.getAllByRole('treeitem').slice(1).map(row => row.textContent)).toEqual([
@@ -588,14 +612,17 @@ describe('WorkspaceBrowser', () => {
     expect(screen.queryByRole('button', { name: '加载更多会话' })).toBeNull()
   })
 
-  it('switches through the grouping hint, hides the divider during search and restores the cutoff', () => {
+  it('retains saved workspace grouping, switches through its exact hint and hides the divider only during search', () => {
+    const saved = createWorkspaceViewStore().create()
+    saved.actions.setGroupBy('workspace')
     const b = mount({
       useSessions: hook(sessionState([summary('alpha-s', 300), summary('beta-s', 100)])),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s']), workspace('beta', ['beta-s'])])),
     })
+    expect(b.store.getSnapshot().groupBy).toBe('workspace')
     act(() => { b.store.actions.setAttentionCutoff(100) })
     expect(screen.queryByRole('button', { name: /关注分界线/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '灰色时间分界线仅在单列表显示，点击切换' }))
+    fireEvent.click(screen.getByRole('button', { name: '切到时间列表使用关注线' }))
     expect(b.store.getSnapshot().groupBy).toBe('flat')
     expect(screen.getByRole('button', { name: /关注分界线/ })).toBeTruthy()
     fireEvent.change(screen.getByPlaceholderText('搜索会话…'), { target: { value: 'alpha-s' } })
@@ -726,7 +753,7 @@ describe('WorkspaceBrowser', () => {
 
   it('archives a session from the row menu and hides archived rows in both modes', async () => {
     const archiveSession = vi.fn(async () => {})
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState([summary('kept-s', 2), summary('gone-s', 1)])),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['kept-s', 'gone-s'])])),
       archiveSession,
@@ -750,7 +777,7 @@ describe('WorkspaceBrowser', () => {
     const archiveSession = vi.fn(async () => { throw rejection })
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      mount({
+      mountGrouped({
         useSessions: hook(sessionState([summary('alpha-s', 1)])),
         useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
         archiveSession,
@@ -770,7 +797,7 @@ describe('WorkspaceBrowser', () => {
   it('renders a fork child as a top-level row without a session twist', () => {
     const parent = summary('parent-s', 2)
     const child = { ...summary('child-s', 1), parentId: parent.id }
-    mount({
+    mountGrouped({
       useSessions: hook(sessionState([parent, child])),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['parent-s', 'child-s'])])),
     })
@@ -782,7 +809,7 @@ describe('WorkspaceBrowser', () => {
 
   it('expands the target group before starting a session from its ＋', () => {
     const startSession = vi.fn()
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState([summary('alpha-s', 1)])),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
       startSession,
@@ -799,7 +826,7 @@ describe('WorkspaceBrowser', () => {
 
   it('auto-expands the Ungrouped bucket for a loose current session; its header has no menu and its ＋ is inert', () => {
     const startSession = vi.fn()
-    mount({
+    mountGrouped({
       useSessions: hook(sessionState([summary('loose', 1)], { current: sid('loose') })),
       useWorkspaces: hook(workspaceState([workspace('alpha', [])])),
       startSession,
@@ -813,7 +840,7 @@ describe('WorkspaceBrowser', () => {
 
   it('keeps an already-expanded group when the selection moves within it', () => {
     const first = sessionState([summary('a', 2), summary('b', 1)], { current: sid('a') })
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(first),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['a', 'b'])])),
     })
@@ -833,7 +860,7 @@ describe('WorkspaceBrowser', () => {
       [currentBlank, staleBlank],
       { current: currentBlank.id },
     )
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessions),
       useWorkspaces: hook(workspaceState([
         workspace('alpha', ['alpha-blank']), workspace('beta', ['beta-blank']),
@@ -859,7 +886,7 @@ describe('WorkspaceBrowser', () => {
   it('reveals the selected blank at its timestamp position in both grouped and flat lists', () => {
     const items = [summary('old', 100), summary('blank', 150, { blank: true }), summary('mid', 200)]
     const startSession = vi.fn()
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState(items)),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['old', 'blank', 'mid'])])),
       startSession,
@@ -881,7 +908,7 @@ describe('WorkspaceBrowser', () => {
 
   it('cannot drag a selected blank and preserves its position when the first prompt has the same timestamp', () => {
     const insertSessionBefore = vi.fn(async () => {})
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessionState([
         summary('old', 100),
         summary('blank', 150, { blank: true }),
@@ -922,7 +949,7 @@ describe('WorkspaceBrowser', () => {
         summary('needle-row', 2, { displayTitle: 'Needle row' }),
         summary('other-row', 1, { displayTitle: 'Other row' }),
       ])
-      mount({
+      mountGrouped({
         useSessions: hook(sessions),
         useWorkspaces: hook(workspaceState([workspace('alpha', ['needle-row', 'other-row'])])),
       })
@@ -1134,7 +1161,7 @@ describe('WorkspaceBrowser', () => {
   it('shows the no-sessions empty state in both modes and resolves an empty search', async () => {
     vi.useFakeTimers()
     try {
-      const b = mount()
+      const b = mountGrouped()
       expect(screen.getByText('暂无会话')).toBeTruthy()
       b.store.actions.setGroupBy('flat')
       rerender(b, {})
@@ -1206,7 +1233,7 @@ describe('WorkspaceBrowser', () => {
   })
 
   it('hides the add button when no directory-flow occupant is composed', () => {
-    mount({
+    mountGrouped({
       useWorkspaces: hook(workspaceState([workspace('alpha', [])])),
       useDirectoryFlow: bindSnapshotSelector({ getSnapshot: () => false, subscribe: () => () => {} }),
     })
@@ -1218,7 +1245,7 @@ describe('WorkspaceBrowser', () => {
   it('uses the full expanded Workspace section when resolving a Workspace drop half', () => {
     const insertWorkspaceBefore = vi.fn(async () => {})
     const sessions = sessionState(Array.from({ length: 5 }, (_, index) => summary(`beta-${index}`, index)))
-    mount({
+    mountGrouped({
       useSessions: hook(sessions),
       useWorkspaces: hook(workspaceState([
         workspace('alpha', []),
@@ -1244,7 +1271,7 @@ describe('WorkspaceBrowser', () => {
   })
 
   it('draws the first Workspace insertion boundary on the scroll container', () => {
-    mount({
+    mountGrouped({
       useWorkspaces: hook(workspaceState([
         workspace('alpha', []),
         workspace('beta', []),
@@ -1267,7 +1294,7 @@ describe('WorkspaceBrowser', () => {
 
   it('accepts a document-level drop and commits the last Workspace marker on drag end', () => {
     const insertWorkspaceBefore = vi.fn(async () => {})
-    mount({
+    mountGrouped({
       useWorkspaces: hook(workspaceState([
         workspace('alpha', []),
         workspace('beta', []),
@@ -1296,7 +1323,7 @@ describe('WorkspaceBrowser', () => {
   it('ignores synthetic session drags onto other rows or either half of the source row', () => {
     const insertSessionBefore = vi.fn(async () => {})
     const sessions = sessionState([summary('one', 3), summary('two', 2), summary('three', 1)])
-    mount({
+    mountGrouped({
       useSessions: hook(sessions),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['one', 'two', 'three'])])),
       insertSessionBefore,
@@ -1332,7 +1359,7 @@ describe('WorkspaceBrowser', () => {
   it('ignores legacy Ungrouped order and row drags in both modes and after remount', () => {
     const insertSessionBefore = vi.fn(async () => {})
     const sessions = sessionState([summary('three', 1), summary('two', 2), summary('one', 3)])
-    const b = mount({ useSessions: hook(sessions), insertSessionBefore })
+    const b = mountGrouped({ useSessions: hook(sessions), insertSessionBefore })
     act(() => { b.store.actions.setSessionOrder(UNGROUPED_KEY, ['two', 'three', 'one']) })
     fireEvent.click(screen.getByText('未分组'))
     const expected = [expect.stringContaining('one'), expect.stringContaining('two'), expect.stringContaining('three')]
@@ -1355,7 +1382,7 @@ describe('WorkspaceBrowser', () => {
   it('does not send a session reorder when group membership changes after a synthetic drag', () => {
     const insertSessionBefore = vi.fn(async () => {})
     const sessions = sessionState([summary('one', 2), summary('two', 1)])
-    const b = mount({
+    const b = mountGrouped({
       useSessions: hook(sessions),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['one', 'two'])])),
       insertSessionBefore,
@@ -1376,7 +1403,7 @@ describe('WorkspaceBrowser', () => {
   it('ignores synthetic session drag-end and bottom-half drops', () => {
     const insertSessionBefore = vi.fn(async () => {})
     const sessions = sessionState([summary('one', 2), summary('two', 1)])
-    mount({
+    mountGrouped({
       useSessions: hook(sessions),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['one', 'two'])])),
       insertSessionBefore,
@@ -1402,7 +1429,7 @@ describe('WorkspaceBrowser', () => {
 
   it('does not accept a document-level drop or persist order after a synthetic Session drag', () => {
     const insertSessionBefore = vi.fn(async () => {})
-    mount({
+    mountGrouped({
       useSessions: hook(sessionState([summary('one', 2), summary('two', 1)])),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['one', 'two'])])),
       insertSessionBefore,
@@ -1427,7 +1454,7 @@ describe('WorkspaceBrowser', () => {
     try {
       const insertSessionBefore = vi.fn(async () => { throw new Error('stale anchor') })
       const sessions = sessionState([summary('one', 2), summary('two', 1)])
-      mount({
+      mountGrouped({
         useSessions: hook(sessions),
         useWorkspaces: hook(workspaceState([workspace('alpha', ['one', 'two'])])),
         insertSessionBefore,
@@ -1453,7 +1480,7 @@ describe('WorkspaceBrowser', () => {
   it('renames a workspace through the row menu dialog', async () => {
     let resolveRename!: () => void
     const renameWorkspace = vi.fn(() => new Promise<void>((resolve) => { resolveRename = resolve }))
-    mount({
+    mountGrouped({
       useWorkspaces: hook(workspaceState([workspace('alpha', [], 'Alpha'), workspace('beta', [], 'Beta')])),
       renameWorkspace,
     })
@@ -1482,7 +1509,7 @@ describe('WorkspaceBrowser', () => {
 
   it('rename via Enter, failure surfaces the error, Cancel closes', async () => {
     const renameWorkspace = vi.fn(async () => { throw new Error('rename conflict') })
-    mount({
+    mountGrouped({
       useWorkspaces: hook(workspaceState([workspace('alpha', [], 'Alpha')])),
       renameWorkspace,
     })
@@ -1506,7 +1533,7 @@ describe('WorkspaceBrowser', () => {
 
   it('reports non-Error rename failures as text', async () => {
     const renameWorkspace = vi.fn(async () => { throw 'denied' })
-    mount({
+    mountGrouped({
       useWorkspaces: hook(workspaceState([workspace('alpha', [], 'Alpha')])),
       renameWorkspace,
     })
@@ -1520,7 +1547,7 @@ describe('WorkspaceBrowser', () => {
   it('confirms Workspace deletion, explains retention, and blocks duplicate submission', async () => {
     let resolveDelete!: () => void
     const deleteWorkspace = vi.fn(() => new Promise<void>((resolve) => { resolveDelete = resolve }))
-    const browser = mount({
+    const browser = mountGrouped({
       useWorkspaces: hook(workspaceState([workspace('alpha', ['session'], 'Alpha')])),
       deleteWorkspace,
     })
@@ -1555,7 +1582,7 @@ describe('WorkspaceBrowser', () => {
     const deleteWorkspace = vi.fn()
       .mockRejectedValueOnce(new Error('storage unavailable'))
       .mockRejectedValueOnce('denied')
-    mount({
+    mountGrouped({
       useWorkspaces: hook(workspaceState([workspace('alpha', [], 'Alpha')])),
       deleteWorkspace,
     })
@@ -1572,7 +1599,7 @@ describe('WorkspaceBrowser', () => {
 
   it('Cancel, Escape, and Close dismiss deletion without calling the action', () => {
     const deleteWorkspace = vi.fn(async () => {})
-    mount({
+    mountGrouped({
       useWorkspaces: hook(workspaceState([workspace('alpha', [], 'Alpha')])),
       deleteWorkspace,
     })
@@ -1592,7 +1619,7 @@ describe('WorkspaceBrowser', () => {
 
   it('search hides drag affordances (rows are not draggable during search)', () => {
     const sessions = sessionState([summary('needle-a', 2, { displayTitle: 'Needle A' })])
-    mount({
+    mountGrouped({
       useSessions: hook(sessions),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['needle-a'])])),
     })

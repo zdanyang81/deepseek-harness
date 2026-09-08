@@ -56,7 +56,7 @@ type WorkspaceViewActions = {
 export function createWorkspaceViewStore(): EngineStoreHandle<WorkspaceViewState, WorkspaceViewActions> {
   return defineStore({
     init: (): WorkspaceViewState => ({
-      groupBy: 'workspace',
+      groupBy: 'flat',
       orderBy: 'updated',
       attentionCutoff: null,
       groupExpansion: {},

@@ -994,7 +994,7 @@ export function WorkspaceBrowser({
           className={css.sessionOverflowButton}
           onClick={() => { actions.setGroupBy('flat') }}
         >
-          灰色时间分界线仅在单列表显示，点击切换
+          切到时间列表使用关注线
         </button>
       )}
       <div className={css.listArea}>
