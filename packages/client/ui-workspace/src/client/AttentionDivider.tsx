@@ -1,6 +1,6 @@
 /** A list-owned pointer gesture. Only pointerup after a held, moved drag commits time. */
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useRef } from 'react'
-import { type AttentionBoundary, attentionIndex, attentionPointerGap, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
+import { type AttentionBoundary, attentionIndex, attentionPointerGap, attentionRowsRetainPrefix, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
 import css from './AttentionDivider.module.css'
 
 type Props = {
@@ -21,6 +21,8 @@ type Gesture = {
   active: boolean
   moved: boolean
   cutoff: AttentionBoundary
+  savedCutoff: AttentionBoundary
+  rows: Props['rows']
   timer: ReturnType<typeof setTimeout>
   frame: number
   dispose: () => void
@@ -34,7 +36,6 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
   latest.current = { rows, cutoff, commit }
   const effective = preview ?? cutoff
   const index = attentionIndex(rows, effective)
-  const signature = rows.map(row => `${row.id}:${row.updatedAt}`).join('|')
 
   function cancel(): void {
     gesture.current?.dispose()
@@ -42,8 +43,23 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
     setPreview(null)
   }
 
-  // New activity/pages invalidate geometry while dragging, rather than committing a stale gap.
-  useEffect(() => cancel, [signature, cutoff])
+  function reconcile(g: Gesture): boolean {
+    if (gesture.current !== g) return false
+    if (latest.current.cutoff !== g.savedCutoff || !attentionRowsRetainPrefix(g.rows, latest.current.rows)) {
+      cancel()
+      return false
+    }
+    // Newly appended rows become part of the protected prefix for subsequent updates.
+    g.rows = latest.current.rows
+    return true
+  }
+
+  // Row updates reconcile without a cleanup: append-only paging must retain capture and preview.
+  useEffect(() => {
+    const g = gesture.current
+    if (g !== null) reconcile(g)
+  }, [rows, cutoff])
+  useEffect(() => cancel, [])
 
   function down(event: ReactPointerEvent<HTMLButtonElement>): void {
     if (event.isPrimary === false || event.button !== 0 || rows.length === 0 || gesture.current !== null) return
@@ -57,8 +73,9 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
     button.setPointerCapture(event.pointerId)
     const g: Gesture = {
       pointerId: event.pointerId, x: event.clientX, y: event.clientY, lastY: event.clientY,
-      active: false, moved: false, cutoff, frame: 0,
+      active: false, moved: false, cutoff, savedCutoff: cutoff, rows, frame: 0,
       timer: setTimeout(() => {
+        if (!reconcile(g)) return
         g.active = true
         setPreview(g.cutoff)
         g.frame = requestAnimationFrame(tick)
@@ -83,7 +100,7 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
       setPreview(g.cutoff)
     }
     function tick(): void {
-      if (gesture.current !== g) return
+      if (!reconcile(g)) return
       if (g.moved) {
         const bounds = scroller.getBoundingClientRect()
         const before = scroller.scrollTop
@@ -94,7 +111,7 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
       g.frame = requestAnimationFrame(tick)
     }
     function move(e: PointerEvent): void {
-      if (e.pointerId !== g.pointerId) return
+      if (e.pointerId !== g.pointerId || !reconcile(g)) return
       const distance = Math.hypot(e.clientX - g.x, e.clientY - g.y)
       if (!g.active) {
         if (distance > 10) cancel()
@@ -106,7 +123,7 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
     }
     function up(e: PointerEvent): void {
       if (e.pointerId !== g.pointerId) return
-      if (latest.current.rows.map(row => `${row.id}:${row.updatedAt}`).join('|') !== signature) { cancel(); return }
+      if (!reconcile(g)) return
       const bounds = scroller.getBoundingClientRect()
       const inside = e.clientX >= bounds.left && e.clientX <= bounds.right
         && e.clientY >= bounds.top && e.clientY <= bounds.bottom

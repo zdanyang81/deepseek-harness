@@ -44,6 +44,19 @@ export function cutoffAtGap(rows: readonly TimedRow[], gap: number, now: number)
   return row === undefined ? now : { timestamp: row.updatedAt, id: row.id, side: 'before' }
 }
 
+/**
+ * Accept unchanged rows or tail-only pagination, never mutations of an observed prefix.
+ * @param previous - rows already accepted by the current gesture.
+ * @param next - latest ordered catalog projection.
+ * @returns whether every observed row retains its identity, time and position.
+ */
+export function attentionRowsRetainPrefix(previous: readonly TimedRow[], next: readonly TimedRow[]): boolean {
+  return next.length >= previous.length && previous.every((row, index) => {
+    const candidate = next[index]
+    return candidate?.id === row.id && candidate.updatedAt === row.updatedAt
+  })
+}
+
 type VerticalRect = { readonly top: number; readonly bottom: number }
 
 /**

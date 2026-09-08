@@ -602,13 +602,14 @@ describe('WorkspaceBrowser', () => {
     expect(divider.dataset.attentionIndex).toBe('3')
   })
 
-  it('restores the real FlatList track and store on canceled preview while preserving adjacent row clicks', () => {
+  it.each(['cancellation', 'append-only page'])('keeps real FlatList/store ownership and row clicks through %s', (kind) => {
     vi.useFakeTimers()
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16))
     vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
     try {
       const open = vi.fn()
-      const b = mount({ useSessions: hook(sessionState([summary('a', 300), summary('b', 200), summary('c', 100)])), open })
+      const items = [summary('a', 300), summary('b', 200), summary('c', 100)]
+      const b = mount({ useSessions: hook(sessionState(items)), open })
       act(() => { b.store.actions.setAttentionCutoff(200) })
       const list = screen.getByRole('tree', { name: '会话' })
       const handle = screen.getByRole('button', { name: /关注分界线/ })
@@ -618,10 +619,13 @@ describe('WorkspaceBrowser', () => {
       })
       Object.assign(handle, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() })
       vi.spyOn(list, 'getBoundingClientRect').mockImplementation(() => rect(0, 400))
-      vi.spyOn(divider, 'getBoundingClientRect').mockImplementation(() => rect(100 + Number(divider.dataset.attentionIndex) * 32))
-      for (const row of list.querySelectorAll<HTMLElement>('[data-attention-row]')) {
-        vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => rect(100 + (Number(row.style.getPropertyValue('--attention-row')) - 1) * 32))
+      vi.spyOn(divider, 'getBoundingClientRect').mockImplementation(() => rect(100 + Number(divider.dataset.attentionIndex) * 32 - list.scrollTop))
+      const measureRows = () => {
+        for (const row of list.querySelectorAll<HTMLElement>('[data-attention-row]')) {
+          vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => rect(100 + (Number(row.style.getPropertyValue('--attention-row')) - 1) * 32 - list.scrollTop))
+        }
       }
+      measureRows()
       const send = (target: EventTarget, type: string, y: number) => {
         const event = new Event(type, { bubbles: true, cancelable: true })
         Object.assign(event, { clientX: 150, clientY: y, pointerId: 1, isPrimary: true, button: 0 })
@@ -635,9 +639,25 @@ describe('WorkspaceBrowser', () => {
       send(window, 'pointermove', 202)
       expect(divider.dataset.attentionIndex).toBe('2')
       expect(screen.getByRole('button', { name: /关注分界线/ })).toBe(handle)
-      send(window, 'pointercancel', 202)
-      expect(divider.dataset.attentionIndex).toBe('1')
-      expect(b.store.getSnapshot().attentionCutoff).toBe(200)
+      if (kind === 'append-only page') {
+        rerender(b, { useSessions: hook(sessionState([...items, summary('d', 50), summary('e', 25)])) })
+        measureRows()
+        expect(handle.getAttribute('aria-pressed')).toBe('true')
+        expect(divider.dataset.attentionIndex).toBe('2')
+        expect(handle.releasePointerCapture).not.toHaveBeenCalled()
+        list.scrollTop = 64
+        send(window, 'pointermove', 202)
+        expect(divider.dataset.attentionIndex).toBe('4')
+        send(window, 'pointerup', 202)
+        expect(b.store.getSnapshot().attentionCutoff).toEqual({ timestamp: 25, id: 'e', side: 'before' })
+        expect(divider.dataset.attentionIndex).toBe('4')
+        // jsdom schedules the successful localStorage write's storage event at 0ms.
+        act(() => { vi.advanceTimersByTime(0) })
+      } else {
+        send(window, 'pointercancel', 202)
+        expect(divider.dataset.attentionIndex).toBe('1')
+        expect(b.store.getSnapshot().attentionCutoff).toBe(200)
+      }
       fireEvent.click(screen.getByText('b'))
       expect(open).toHaveBeenCalledExactlyOnceWith(sid('b'))
       expect(vi.getTimerCount()).toBe(0)

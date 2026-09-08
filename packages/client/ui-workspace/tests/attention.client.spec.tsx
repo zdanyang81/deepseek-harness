@@ -52,14 +52,17 @@ function mount(cutoff: AttentionBoundary = 200, more = false, initialRows = rows
   const view = render(content())
   const list = listRef.current!
   vi.spyOn(list, 'getBoundingClientRect').mockImplementation(() => rect(0, 250))
-  list.querySelectorAll<HTMLElement>('[data-attention-row]').forEach((el) => {
-    vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => rect(100 + (Number(el.style.getPropertyValue('--attention-row')) - 1) * 32 - list.scrollTop))
-  })
+  const measureRows = () => {
+    list.querySelectorAll<HTMLElement>('[data-attention-row]').forEach((el) => {
+      vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => rect(100 + (Number(el.style.getPropertyValue('--attention-row')) - 1) * 32 - list.scrollTop))
+    })
+  }
+  measureRows()
   const button = screen.getByRole('button', { name: /关注分界线/ })
   const divider = button.closest<HTMLElement>('[data-attention-index]')!
   vi.spyOn(divider, 'getBoundingClientRect').mockImplementation(() => rect(100 + Number(divider.dataset.attentionIndex) * 32 - list.scrollTop))
   vi.spyOn(button, 'getBoundingClientRect').mockImplementation(() => rect(divider.getBoundingClientRect().top + 4, 24))
-  return { view, list, commit, button, divider, open, content }
+  return { view, list, commit, button, divider, open, content, measureRows }
 }
 
 describe('timestamp partition', () => {
@@ -239,6 +242,75 @@ describe('divider pointer ownership', () => {
     pointer(window, 'pointermove', 150, 202)
     pointer(window, 'pointerup', 400, 202)
     expect(b.commit).not.toHaveBeenCalled()
+  })
+  it.each([
+    { side: 'before', y: 202, index: '4' },
+    { side: 'after', y: 240, index: '5' },
+  ] as const)('retains a held drag through append-only paging and commits $side a new-page Session', ({ side, y, index }) => {
+    const b = mount(200, true)
+    const capture = vi.spyOn(b.button, 'setPointerCapture')
+    const release = vi.spyOn(b.button, 'releasePointerCapture')
+    vi.spyOn(b.button, 'hasPointerCapture').mockReturnValue(true)
+    pointer(b.button, 'pointerdown')
+    act(() => vi.advanceTimersByTime(450))
+    pointer(window, 'pointermove', 150, 245)
+    act(() => vi.advanceTimersByTime(32))
+    expect(b.list.scrollTop).toBeGreaterThan(0)
+    const preview = b.divider.dataset.attentionBoundary
+    b.view.rerender(b.content([...rows.map(row => ({ ...row })), { id: 'd', updatedAt: 50 }, { id: 'e', updatedAt: 25 }]))
+    b.measureRows()
+    expect(screen.getByRole('button', { name: /关注分界线/ })).toBe(b.button)
+    expect(b.button.getAttribute('aria-pressed')).toBe('true')
+    expect(b.divider.dataset.attentionBoundary).toBe(preview)
+    expect(capture).toHaveBeenCalledTimes(1)
+    expect(release).not.toHaveBeenCalled()
+    b.list.scrollTop = 64
+    pointer(window, 'pointermove', 150, y)
+    expect(b.divider.dataset.attentionIndex).toBe(index)
+    pointer(window, 'pointerup', 150, y)
+    expect(b.commit).toHaveBeenCalledExactlyOnceWith({ timestamp: 25, id: 'e', side })
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('retains the pending hold deadline when an older page is appended', () => {
+    const b = mount(200, true)
+    pointer(b.button, 'pointerdown')
+    act(() => vi.advanceTimersByTime(449))
+    b.view.rerender(b.content([...rows, { id: 'd', updatedAt: 50 }]))
+    b.measureRows()
+    act(() => vi.advanceTimersByTime(1))
+    expect(b.button.getAttribute('aria-pressed')).toBe('true')
+    pointer(window, 'pointercancel')
+    expect(b.commit).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it.each([
+    { kind: 'reorder', items: [rows[1]!, rows[0]!, rows[2]!] },
+    { kind: 'timestamp update without reorder', items: [{ ...rows[0]!, updatedAt: 301 }, ...rows.slice(1)] },
+    { kind: 'deletion', items: rows.slice(0, 2) },
+    { kind: 'insertion within prefix', items: [rows[0]!, { id: 'x', updatedAt: 250 }, ...rows.slice(1)] },
+  ])('cancels a held gesture on $kind rather than accepting a changed prefix', ({ items }) => {
+    const b = mount()
+    pointer(b.button, 'pointerdown')
+    act(() => vi.advanceTimersByTime(450))
+    pointer(window, 'pointermove', 150, 202)
+    b.view.rerender(b.content(items))
+    expect(b.button.getAttribute('aria-pressed')).toBe('false')
+    pointer(window, 'pointerup', 150, 202)
+    expect(b.commit).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('protects an appended page as part of the prefix and cancels if that page is removed', () => {
+    const b = mount(200, true)
+    pointer(b.button, 'pointerdown')
+    act(() => vi.advanceTimersByTime(450))
+    b.view.rerender(b.content([...rows, { id: 'd', updatedAt: 50 }]))
+    expect(b.button.getAttribute('aria-pressed')).toBe('true')
+    b.view.rerender(b.content(rows))
+    expect(b.button.getAttribute('aria-pressed')).toBe('false')
+    pointer(window, 'pointerup', 150, 202)
+    expect(b.commit).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
   it('new activity while dragging cancels the old geometry', () => {
     const b = mount()
