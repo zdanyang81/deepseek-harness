@@ -6,6 +6,7 @@
  * share from the return type.
  */
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
+import type { AttentionBoundary } from './attention.ts'
 
 /** Browser-local order account for the hierarchy-free flat Session list. */
 export const FLAT_SESSION_ORDER_KEY = '__flat_session_order__'
@@ -19,6 +20,8 @@ export type SessionOrderBy = 'manual' | 'updated'
 type WorkspaceViewState = {
   groupBy: SessionGroupBy
   orderBy: SessionOrderBy
+  /** Null initializes once at mount time; identity disambiguates only equal-time neighbors. */
+  attentionCutoff: AttentionBoundary | null
   /** Explicit zero-or-five-session state keyed by Workspace group identity. */
   groupExpansion: Record<string, boolean>
   /** Shared editable order per Workspace group plus the browser-local flat-list account. */
@@ -34,6 +37,7 @@ type WorkspaceViewState = {
 type WorkspaceViewActions = {
   setGroupBy: (draft: WorkspaceViewState, mode: SessionGroupBy) => void
   setOrderBy: (draft: WorkspaceViewState, mode: SessionOrderBy) => void
+  setAttentionCutoff: (draft: WorkspaceViewState, cutoff: AttentionBoundary) => void
   setGroupExpanded: (draft: WorkspaceViewState, key: string, expanded: boolean) => void
   retainAccountKeys: (draft: WorkspaceViewState, workspaceKeys: readonly string[]) => void
   syncSessionOrderAccount: (
@@ -52,8 +56,9 @@ type WorkspaceViewActions = {
 export function createWorkspaceViewStore(): EngineStoreHandle<WorkspaceViewState, WorkspaceViewActions> {
   return defineStore({
     init: (): WorkspaceViewState => ({
-      groupBy: 'workspace',
+      groupBy: 'flat',
       orderBy: 'updated',
+      attentionCutoff: null,
       groupExpansion: {},
       sessionOrderByAccount: {},
       sessionUpdatedAtByAccount: {},
@@ -61,7 +66,8 @@ export function createWorkspaceViewStore(): EngineStoreHandle<WorkspaceViewState
     persist: 'dsh.workspace.view.v5',
     actions: {
       setGroupBy: (d, mode: SessionGroupBy) => { d.groupBy = mode },
-      setOrderBy: (d, mode: SessionOrderBy) => { d.orderBy = mode },
+      setOrderBy: (d, _mode: SessionOrderBy) => { d.orderBy = 'updated' },
+      setAttentionCutoff: (d, cutoff: AttentionBoundary) => { d.attentionCutoff = cutoff },
       setGroupExpanded: (d, key: string, expanded: boolean) => { d.groupExpansion[key] = expanded },
       retainAccountKeys: (d, workspaceKeys: readonly string[]) => {
         const retained = new Set(workspaceKeys)

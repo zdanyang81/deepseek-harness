@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 const css = readFileSync(fileURLToPath(new URL('../src/client/WorkspaceBrowser.module.css', import.meta.url)), 'utf8')
 const rowsCss = readFileSync(fileURLToPath(new URL('../src/client/rows/Rows.module.css', import.meta.url)), 'utf8')
+const attentionCss = readFileSync(fileURLToPath(new URL('../src/client/AttentionDivider.module.css', import.meta.url)), 'utf8')
 
 /**
  * Declarations of one selector rule, keyed by property with whitespace collapsed.
@@ -37,6 +38,22 @@ describe('WorkspaceBrowser.module.css list', () => {
   const root = declarations('.root')
   const listArea = declarations('.listArea')
   const list = declarations('.list')
+
+  it('reserves a real 32px track around the 24px handle rather than overlaying Session titles', () => {
+    const divider = declarationsFrom(attentionCss, '.divider')
+    const handle = declarationsFrom(attentionCss, '.handle')
+    expect(declarations('.flatList')?.get('display')).toBe('grid')
+    expect(declarations('.flatList')?.get('grid-template-columns')).toBe('minmax(0, 1fr)')
+    expect(declarations('.flatList')?.get('align-content')).toBe('start')
+    expect(divider?.get('position')).toBe('relative')
+    expect(divider?.get('height')).toBe('32px')
+    expect(divider?.get('grid-row')).toBe('var(--attention-gap-row)')
+    expect(divider?.get('transform')).toBeUndefined()
+    expect(handle?.get('height')).toBe('24px')
+    expect(handle?.get('box-sizing')).toBe('border-box')
+    expect(declarations('.flatList > [data-attention-row]')?.get('grid-row')).toBe('var(--attention-row)')
+    expect(declarations('.flatList > .sessionOverflowButton')?.get('grid-row')).toBe('var(--attention-footer-row)')
+  })
 
   it('is the scrolling region', () => {
     expect(list).toBeDefined()
@@ -106,6 +123,19 @@ describe('WorkspaceBrowser.module.css list', () => {
     expect(rowDeclarations('.searchResultRow')?.get('min-height')).toBe('48px')
     expect(rowDeclarations('.sessionRow.selected')?.get('background'))
       .toBe('var(--dsw-alias-interactive-bg-hover)')
+  })
+
+  it('makes the attention-view switch distinct from pagination with primary text and a visible focus ring', () => {
+    const hint = declarations('.attentionHint')
+    expect(hint?.get('height')).toBe('32px')
+    expect(hint?.get('font-weight')).toBe('600')
+    expect(hint?.get('color')).toBe('var(--dsw-alias-label-primary)')
+    expect(hint?.get('border')).toBe('1px solid var(--dsw-alias-border-l2)')
+    expect(hint?.get('background')).toBe('var(--dsw-alias-interactive-bg-hover)')
+    expect(hint?.get('cursor')).toBe('pointer')
+    expect(declarations('.attentionHint:hover')?.get('background')).toBe('var(--dsw-alias-interactive-bg-active)')
+    expect(declarations('.attentionHint:focus-visible')?.get('outline')).toBe('2px solid var(--dsw-alias-label-primary)')
+    expect(declarations('.attentionHint:focus-visible')?.get('outline-offset')).toBe('2px')
   })
 
   it('pins both rail controls to the shared left anchor during the column slide', () => {

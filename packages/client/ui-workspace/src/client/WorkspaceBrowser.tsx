@@ -9,22 +9,24 @@
  * menu in between; the flow and its error dialog live in WorkspacePicker
  * (same package — direct composition, no slot between them).
  */
-import { type UIEvent, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, type UIEvent, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   Button, IconCloseFill14, IconPersonalizationOutline16,
   IconProjectAddOutline16, IconSearchOutline16, Menu, Modal, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
-  SessionId, SessionListState, SessionSearchResultItem, WorkspaceId, WorkspaceView,
+  SessionListState, SessionSearchResultItem, WorkspaceId, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { WorkspaceBrowserProps } from './contract/slots.ts'
-import type { SessionNode, SessionOrderBy } from './tree.ts'
+import type { SessionNode } from './tree.ts'
 import { deriveFlat, deriveGroups, deriveSearchResults, UNGROUPED_KEY } from './tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './rows/Rows.tsx'
 import { FLAT_SESSION_ORDER_KEY } from './stores.ts'
 import { WorkspacePickFlow } from './WorkspacePicker.tsx'
 import css from './WorkspaceBrowser.module.css'
+import { AttentionDivider } from './AttentionDivider.tsx'
+import { type AttentionBoundary, attentionCutoff, attentionIndex } from './attention.ts'
 
 /**
  * Column slide length (--ds-transition-duration-slow): rail-search focus waits it out —
@@ -190,79 +192,10 @@ function useSessionCatalogAutoLoad({
   return { listRef, onScroll, onWheel }
 }
 
-/** Reconcile a stored view order with the Workspace's current session account. */
-function reconciledSessionOrder(sessionIds: readonly SessionId[], stored: readonly string[] | undefined): SessionId[] {
-  if (stored === undefined) return [...sessionIds]
-  const byId = new Map(sessionIds.map(id => [id as string, id]))
-  const ordered: SessionId[] = []
-  const included = new Set<string>()
-  for (const key of stored) {
-    const id = byId.get(key)
-    if (id === undefined || included.has(key)) continue
-    ordered.push(id)
-    included.add(key)
-  }
-  for (const id of sessionIds) {
-    if (included.has(id)) continue
-    ordered.push(id)
-  }
-  return ordered
-}
-
-/** Newest update first with stable Session identity as the tie-break. */
-function compareSessionRecency(a: SessionId, b: SessionId, byId: SessionListState['byId']): number {
-  const aUpdatedAt = byId[a]?.updatedAt ?? Number.NEGATIVE_INFINITY
-  const bUpdatedAt = byId[b]?.updatedAt ?? Number.NEGATIVE_INFINITY
-  if (aUpdatedAt !== bUpdatedAt) return bUpdatedAt - aUpdatedAt
-  return a < b ? -1 : 1
-}
-
-/** Reconcile one editable order account and apply its activity-promotion policy. */
-function nextSessionOrderAccount({
-  sessionIds, previousOrder, previousUpdatedAt, list, orderBy, sortByRecency,
-}: {
-  sessionIds: readonly SessionId[]
-  previousOrder: readonly string[] | undefined
-  previousUpdatedAt: Readonly<Record<string, number>>
-  list: SessionListState
-  orderBy: SessionOrderBy
-  sortByRecency: boolean
-}): { order: SessionId[]; updatedAt: Record<string, number>; changed: boolean } {
-  let order = reconciledSessionOrder(sessionIds, previousOrder)
-  if (sortByRecency) {
-    order.sort((a, b) => compareSessionRecency(a, b, list.byId))
-  } else if (orderBy === 'updated') {
-    const promoted = sessionIds
-      .filter((id) => {
-        const session = list.byId[id]
-        return session !== undefined
-          && (previousUpdatedAt[id] !== undefined && session.updatedAt > previousUpdatedAt[id])
-      })
-      .sort((a, b) => compareSessionRecency(a, b, list.byId))
-    if (promoted.length > 0) {
-      const promotedIds = new Set(promoted)
-      order = [...promoted, ...order.filter(id => !promotedIds.has(id))]
-    }
-  }
-  const updatedAt: Record<string, number> = {}
-  for (const id of sessionIds) {
-    const session = list.byId[id]
-    if (session !== undefined) updatedAt[id] = session.updatedAt
-  }
-  const orderChanged = previousOrder === undefined
-    || order.length !== previousOrder.length
-    || order.some((id, index) => id !== previousOrder[index])
-  const timestampsChanged = Object.keys(updatedAt).length !== Object.keys(previousUpdatedAt).length
-    || Object.entries(updatedAt).some(([id, timestamp]) => previousUpdatedAt[id] !== timestamp)
-  return { order, updatedAt, changed: orderChanged || timestampsChanged }
-}
-
 /** Grouping and ordering menu; own open state so it resets with the wide chrome. */
-function ViewOptionsMenu({ groupBy, orderBy, onGroupPick, onOrderPick, t }: {
+function ViewOptionsMenu({ groupBy, onGroupPick, t }: {
   groupBy: 'workspace' | 'flat'
-  orderBy: SessionOrderBy
   onGroupPick: (mode: 'workspace' | 'flat') => void
-  onOrderPick: (mode: SessionOrderBy) => void
   t: WorkspaceBrowserProps['t']
 }) {
   const [open, setOpen] = useState(false)
@@ -276,13 +209,11 @@ function ViewOptionsMenu({ groupBy, orderBy, onGroupPick, onOrderPick, t }: {
         { id: 'flat', label: t('groupBy.flat') },
         { type: 'separator' as const, id: 'order-by-separator' },
         { type: 'label' as const, id: 'order-by', text: t('orderBy.label') },
-        { id: 'manual', label: t('orderBy.manual') },
         { id: 'updated', label: t('orderBy.updated') },
       ]}
-      selectedIds={[groupBy, orderBy]}
+      selectedIds={[groupBy, 'updated']}
       onSelect={(id) => {
         if (id === 'workspace' || id === 'flat') onGroupPick(id)
-        else if (id === 'manual' || id === 'updated') onOrderPick(id)
         setOpen(false)
       }}
       align="end"
@@ -306,15 +237,6 @@ function ViewOptionsMenu({ groupBy, orderBy, onGroupPick, onOrderPick, t }: {
   )
 }
 
-/** In-flight root-row drag: source identity plus the current insert marker. */
-interface DragState {
-  /** Workspace id, or {@link UNGROUPED_KEY} for the browser-local loose-session account. */
-  accountKey: string
-  sessionId: SessionNode['id']
-  /** Row the marker sits on and which half (insert above/below it). */
-  over: { id: SessionNode['id']; half: 'before' | 'after' } | null
-}
-
 /** In-flight Workspace-row drag: source identity plus the current marker. */
 interface WorkspaceDragState {
   workspaceId: WorkspaceId
@@ -330,7 +252,7 @@ function workspaceGroupHalf(e: { clientY: number; currentTarget: HTMLElement }):
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
   'useSessions' | 'startSession' | 'open' | 'loadMoreSessions' | 'forkSession'
-  | 'insertWorkspaceBefore' | 'insertSessionBefore' | 't'
+  | 'insertWorkspaceBefore' | 't'
 > & {
   /** Host account home for POSIX hover-path abbreviation. */
   home?: string | undefined
@@ -339,14 +261,6 @@ type SessionTreeProps = Pick<
   groupExpansion: Readonly<Record<string, boolean>>
   /** Persist one Workspace group's zero-or-five-session state. */
   setGroupExpanded: (key: string, expanded: boolean) => void
-  /** Shared editable orders used by Workspace groups and the flat-list account. */
-  sessionOrderByAccount: Readonly<Record<string, readonly string[]>>
-  /** Last update timestamps observed for one-time recent-update promotions. */
-  sessionUpdatedAtByAccount: Readonly<Record<string, Readonly<Record<string, number>>>>
-  /** Replace one shared order and its observed timestamps. */
-  syncSessionOrderAccount: (accountKey: string, order: string[], updatedAt: Record<string, number>) => void
-  /** Apply a drag to one shared order. */
-  setSessionOrder: (accountKey: string, order: string[]) => void
   /** Registry-global archive set (hidden rows). */
   archivedSessionIds: readonly SessionNode['id'][]
   /** Open the browser-owned rename dialog for a real Workspace group. */
@@ -357,29 +271,20 @@ type SessionTreeProps = Pick<
   onSessionRename: (sessionId: SessionNode['id'], currentTitle: string) => void
   /** Archive a session (row menu action; the row disappears on the state echo). */
   onSessionArchive: (sessionId: SessionNode['id']) => void
-  /** Session order behavior: fixed after edits, or additionally promoted by user activity. */
-  orderBy: SessionOrderBy
 }
 
 /** The scrolling session tree; unmounting drops the sessions subscription and expand-all state. */
 function SessionTree({
   useSessions, startSession, open, loadMoreSessions, forkSession, workspaces, archivedSessionIds,
   onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive,
-  insertWorkspaceBefore, insertSessionBefore, orderBy,
-  groupExpansion, setGroupExpanded,
-  sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, home, t,
+  insertWorkspaceBefore, groupExpansion, setGroupExpanded, home, t,
 }: SessionTreeProps) {
   const list = useSessions(s => s) as PageableSessionListState
   const current = list.current
   const [expandedSessionGroups, setExpandedSessionGroups] = useState<string[]>([])
-  // Transient drag marker state; the selected mode owns the resulting order.
-  const [drag, setDrag] = useState<DragState | null>(null)
-  const sessionDropCommitted = useRef(false)
   const [workspaceDrag, setWorkspaceDrag] = useState<WorkspaceDragState | null>(null)
   const workspaceDropCommitted = useRef(false)
-  const previousOrderBy = useRef(orderBy)
-  const nativeDragActive = drag !== null || workspaceDrag !== null
-  useNativeDragAcceptance(nativeDragActive)
+  useNativeDragAcceptance(workspaceDrag !== null)
   const currentGroup = current === undefined
     ? undefined
     : (workspaces.find(w => w.sessionIds.includes(current))?.workspaceId as string | undefined)
@@ -392,56 +297,12 @@ function SessionTree({
     () => Object.entries(groupExpansion).filter(([, expanded]) => expanded).map(([key]) => key),
     [groupExpansion],
   )
-  const ungroupedSessionIds = useMemo(() => {
-    const accounted = new Set(workspaces.flatMap(workspace => workspace.sessionIds))
-    return list.ids.filter(id => list.byId[id] !== undefined && !accounted.has(id))
-  }, [list, workspaces])
-  useEffect(() => {
-    if (list.phase !== 'ready') return
-    const switchedToUpdated = previousOrderBy.current !== 'updated' && orderBy === 'updated'
-    previousOrderBy.current = orderBy
-    const accounts = [
-      ...workspaces.map(workspace => ({
-        key: workspace.workspaceId as string,
-        sessionIds: workspace.sessionIds.filter(id => list.byId[id] !== undefined),
-      })),
-      { key: UNGROUPED_KEY, sessionIds: ungroupedSessionIds },
-    ]
-    for (const { key, sessionIds } of accounts) {
-      const previousOrder = sessionOrderByAccount[key]
-      const previousUpdatedAt = sessionUpdatedAtByAccount[key] ?? {}
-      const next = nextSessionOrderAccount({
-        sessionIds,
-        previousOrder,
-        previousUpdatedAt,
-        list,
-        orderBy,
-        sortByRecency: orderBy === 'updated' && (previousOrder === undefined || switchedToUpdated),
-      })
-      if (next.changed) {
-        syncSessionOrderAccount(key, next.order.map(id => id as string), next.updatedAt)
-      }
-    }
-  }, [list, orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, ungroupedSessionIds, workspaces])
-  const orderedWorkspaces = useMemo(() => {
-    return workspaces.map((workspace) => {
-      const stored = sessionOrderByAccount[workspace.workspaceId as string]
-      const sessionIds = reconciledSessionOrder(workspace.sessionIds, stored)
-      return { ...workspace, sessionIds }
-    })
-  }, [sessionOrderByAccount, workspaces])
-  const orderedUngroupedSessionIds = useMemo(
-    () => reconciledSessionOrder(ungroupedSessionIds, sessionOrderByAccount[UNGROUPED_KEY]),
-    [sessionOrderByAccount, ungroupedSessionIds],
-  )
   const groups = useMemo(
-    () => deriveGroups(list, orderedWorkspaces, archivedSessionIds, {
-      expandedGroups,
-      ...(sessionOrderByAccount[UNGROUPED_KEY] === undefined
-        ? {}
-        : { ungroupedOrder: sessionOrderByAccount[UNGROUPED_KEY] }),
-    }),
-    [list, orderedWorkspaces, archivedSessionIds, expandedGroups, sessionOrderByAccount],
+    () => deriveGroups(list, workspaces, archivedSessionIds, { expandedGroups }).map(group => ({
+      ...group,
+      sessions: [...group.sessions].sort((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : 1)),
+    })),
+    [list, workspaces, archivedSessionIds, expandedGroups],
   )
   const autoLoad = useSessionCatalogAutoLoad({
     hasMore: list.hasMore === true,
@@ -450,34 +311,6 @@ function SessionTree({
     loadMoreSessions,
   })
   const now = Date.now()
-  const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState['over']>): void => {
-    if (sessionDropCommitted.current) return
-    sessionDropCommitted.current = true
-    setDrag(null)
-    const group = groups.find(candidate => candidate.key === activeDrag.accountKey)
-    if (group === undefined) return
-    const targetIndex = group.sessions.findIndex(session => session.id === over.id)
-    if (targetIndex === -1) return
-    const anchor = over.half === 'before' ? over.id : group.sessions[targetIndex + 1]?.id
-    if (anchor === activeDrag.sessionId) return
-    const sourceIndex = group.sessions.findIndex(session => session.id === activeDrag.sessionId)
-    const anchorIndex = anchor === undefined
-      ? group.sessions.length
-      : group.sessions.findIndex(session => session.id === anchor)
-    if (sourceIndex !== -1 && (anchorIndex === sourceIndex || anchorIndex === sourceIndex + 1)) return
-    const accountSessionIds = activeDrag.accountKey === UNGROUPED_KEY
-      ? orderedUngroupedSessionIds
-      : orderedWorkspaces.find(workspace => workspace.workspaceId === activeDrag.accountKey)?.sessionIds
-    if (accountSessionIds === undefined) return
-    const nextOrder = accountSessionIds.filter(id => id !== activeDrag.sessionId)
-    const insertAt = anchor === undefined ? nextOrder.length : nextOrder.indexOf(anchor)
-    nextOrder.splice(insertAt === -1 ? nextOrder.length : insertAt, 0, activeDrag.sessionId)
-    setSessionOrder(activeDrag.accountKey, nextOrder.map(id => id as string))
-    if (orderBy === 'updated' || activeDrag.accountKey === UNGROUPED_KEY) return
-    insertSessionBefore(activeDrag.accountKey as WorkspaceId, activeDrag.sessionId, anchor).catch((reason: unknown) => {
-      console.warn('session reorder rejected:', reason)
-    })
-  }
   const commitWorkspaceDrag = (
     activeDrag: WorkspaceDragState,
     over: NonNullable<WorkspaceDragState['over']>,
@@ -607,31 +440,6 @@ function SessionTree({
                 ? group.sessions
                 : group.sessions.slice(0, COLLAPSED_SESSION_LIMIT)
               ).map((node) => {
-              // Session drag never leaves its group. Ungrouped writes only the
-              // browser-local account; real Workspaces may also write Host order.
-                const sameGroupDrag = drag !== null && drag.accountKey === group.key
-                const dragProps = {
-                  start: () => {
-                    sessionDropCommitted.current = false
-                    setDrag({ accountKey: group.key, sessionId: node.id, over: null })
-                  },
-                  active: sameGroupDrag,
-                  marker: sameGroupDrag && drag.over?.id === node.id ? drag.over.half : null,
-                  hover: (half: 'before' | 'after') => {
-                  /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
-                    setDrag(d => (d === null ? d : { ...d, over: { id: node.id, half } }))
-                  },
-                  drop: (half: 'before' | 'after') => {
-                  /* v8 ignore next -- narrowing guard: Rows gates drop on `active`, which is false while the drag state is null. */
-                    if (drag === null) return
-                    commitSessionDrag(drag, { id: node.id, half })
-                  },
-                  end: () => {
-                    if (drag?.over !== null && drag?.over !== undefined) commitSessionDrag(drag, drag.over)
-                    else setDrag(null)
-                    sessionDropCommitted.current = false
-                  },
-                }
                 return (
                   <SessionNodeItem
                     key={node.id}
@@ -642,7 +450,6 @@ function SessionTree({
                     onRename={onSessionRename}
                     onFork={forkSession}
                     onArchive={onSessionArchive}
-                    drag={dragProps}
                     t={t}
                   />
                 )
@@ -678,141 +485,53 @@ function SessionTree({
   )
 }
 
-/** The flat "In one list" body: every session is one draggable top-level row. */
+/** Strict timestamp projection; the boundary is viewing state, never session membership. */
 function FlatList({
   useSessions, open, loadMoreSessions, forkSession, onSessionRename, onSessionArchive, archivedSessionIds,
-  orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t,
-}: Pick<
-  SessionTreeProps,
-  | 'useSessions'
-  | 'open'
-  | 'loadMoreSessions'
-  | 'forkSession'
-  | 'onSessionRename'
-  | 'onSessionArchive'
-  | 'archivedSessionIds'
-  | 'orderBy'
-  | 'sessionOrderByAccount'
-  | 'sessionUpdatedAtByAccount'
-  | 'syncSessionOrderAccount'
-  | 'setSessionOrder'
-  | 't'
->) {
+  cutoff, setCutoff, t,
+}: Pick<SessionTreeProps,
+  'useSessions' | 'open' | 'loadMoreSessions' | 'forkSession' | 'onSessionRename' | 'onSessionArchive' | 'archivedSessionIds' | 't'
+> & { cutoff: AttentionBoundary; setCutoff: (value: AttentionBoundary) => void }) {
   const list = useSessions(s => s) as PageableSessionListState
-  const baseRows = useMemo(
-    () => deriveFlat(list, archivedSessionIds),
-    [list, archivedSessionIds],
-  )
-  const sessionIds = useMemo(() => baseRows.map(row => row.id), [baseRows])
-  const previousOrderBy = useRef(orderBy)
-  useEffect(() => {
-    if (list.phase !== 'ready') return
-    const previousOrder = sessionOrderByAccount[FLAT_SESSION_ORDER_KEY]
-    const previousUpdatedAt = sessionUpdatedAtByAccount[FLAT_SESSION_ORDER_KEY] ?? {}
-    const switchedToUpdated = previousOrderBy.current !== 'updated' && orderBy === 'updated'
-    previousOrderBy.current = orderBy
-    const next = nextSessionOrderAccount({
-      sessionIds,
-      previousOrder,
-      previousUpdatedAt,
-      list,
-      orderBy,
-      sortByRecency: orderBy === 'updated' && (previousOrder === undefined || switchedToUpdated),
-    })
-    if (next.changed) {
-      syncSessionOrderAccount(FLAT_SESSION_ORDER_KEY, next.order.map(id => id as string), next.updatedAt)
-    }
-  }, [list, orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, sessionIds, syncSessionOrderAccount])
-  const rows = useMemo(() => {
-    const byId = new Map(baseRows.map(row => [row.id, row]))
-    return reconciledSessionOrder(sessionIds, sessionOrderByAccount[FLAT_SESSION_ORDER_KEY])
-      .flatMap((id) => {
-        const row = byId.get(id)
-        return row === undefined ? [] : [row]
-      })
-  }, [baseRows, sessionOrderByAccount, sessionIds])
+  const rows = useMemo(() => deriveFlat(list, archivedSessionIds), [list, archivedSessionIds])
+  // The list owns one transient boundary shared by its reserved track and stable handle.
+  const [preview, setPreview] = useState<AttentionBoundary | null>(null)
+  const gapIndex = attentionIndex(rows, preview ?? cutoff)
   const autoLoad = useSessionCatalogAutoLoad({
     hasMore: list.hasMore === true,
     loadingMore: list.loadingMore === true,
     catalogCount: list.ids.length,
     loadMoreSessions,
   })
-  const [drag, setDrag] = useState<DragState | null>(null)
-  const dropCommitted = useRef(false)
-  useNativeDragAcceptance(drag !== null)
-  const commitDrag = (activeDrag: DragState, over: NonNullable<DragState['over']>): void => {
-    if (dropCommitted.current) return
-    dropCommitted.current = true
-    setDrag(null)
-    const targetIndex = rows.findIndex(row => row.id === over.id)
-    if (targetIndex === -1) return
-    const anchor = over.half === 'before' ? over.id : rows[targetIndex + 1]?.id
-    if (anchor === activeDrag.sessionId) return
-    const sourceIndex = rows.findIndex(row => row.id === activeDrag.sessionId)
-    const anchorIndex = anchor === undefined ? rows.length : rows.findIndex(row => row.id === anchor)
-    if (sourceIndex !== -1 && (anchorIndex === sourceIndex || anchorIndex === sourceIndex + 1)) return
-    const nextOrder = rows.map(row => row.id).filter(id => id !== activeDrag.sessionId)
-    const insertAt = anchor === undefined ? nextOrder.length : nextOrder.indexOf(anchor)
-    nextOrder.splice(insertAt === -1 ? nextOrder.length : insertAt, 0, activeDrag.sessionId)
-    setSessionOrder(FLAT_SESSION_ORDER_KEY, nextOrder.map(id => id as string))
-  }
   const now = Date.now()
   return (
     <div className={clsx(css.treeBody, css.wide)}>
       <div
         ref={autoLoad.listRef}
         className={clsx(css.list, css.flatList)}
+        style={{ '--attention-footer-row': rows.length + 2 } as CSSProperties}
         role="tree"
         aria-label={t('section.sessions')}
         onScroll={autoLoad.onScroll}
         onWheel={autoLoad.onWheel}
       >
-        {rows.length === 0 && (
-          <div className={css.empty}>{t('empty.none')}</div>
+        {rows.length === 0 && <div className={css.empty}>{t('empty.none')}</div>}
+        {rows.length > 0 && (
+          <AttentionDivider rows={rows} listRef={autoLoad.listRef} cutoff={cutoff} preview={preview} setPreview={setPreview}
+            commit={setCutoff} hasMore={list.hasMore === true} />
         )}
-        {rows.map((node) => {
-          const active = drag !== null
-          return (
+        {rows.map((node, rowIndex) => (
+          <div key={node.id} data-attention-row={node.id}
+            style={{ '--attention-row': rowIndex + 1 + (rowIndex >= gapIndex ? 1 : 0) } as CSSProperties}>
             <SessionNodeItem
-              key={node.id}
-              node={node}
-              currentId={list.current}
-              now={now}
-              onOpen={open}
-              onRename={onSessionRename}
-              onFork={forkSession}
-              onArchive={onSessionArchive}
-              flat
-              drag={{
-                start: () => {
-                  dropCommitted.current = false
-                  setDrag({ accountKey: FLAT_SESSION_ORDER_KEY, sessionId: node.id, over: null })
-                },
-                active,
-                marker: active && drag.over?.id === node.id ? drag.over.half : null,
-                hover: (half) => {
-                  setDrag(current => current === null ? current : { ...current, over: { id: node.id, half } })
-                },
-                drop: (half) => {
-                  if (drag !== null) commitDrag(drag, { id: node.id, half })
-                },
-                end: () => {
-                  if (drag?.over !== null && drag?.over !== undefined) commitDrag(drag, drag.over)
-                  else setDrag(null)
-                  dropCommitted.current = false
-                },
-              }}
-              t={t}
+              node={node} currentId={list.current} now={now} onOpen={open}
+              onRename={onSessionRename} onFork={forkSession} onArchive={onSessionArchive} flat t={t}
             />
-          )
-        })}
+          </div>
+        ))}
         {list.hasMore === true && (
-          <button
-            type="button"
-            className={css.sessionOverflowButton}
-            disabled={list.loadingMore === true}
-            onClick={() => { void loadMoreSessions() }}
-          >
+          <button type="button" className={css.sessionOverflowButton} disabled={list.loadingMore === true}
+            onClick={() => { void loadMoreSessions() }}>
             {list.loadingMore === true ? t('sessions.loadingMore') : t('sessions.loadMore')}
           </button>
         )}
@@ -914,7 +633,6 @@ export function WorkspaceBrowser({
   deleteWorkspace,
   insertWorkspaceBefore,
   archiveSession,
-  insertSessionBefore,
   createWorkspace,
   searchSessions,
   searchResultLimit,
@@ -931,35 +649,13 @@ export function WorkspaceBrowser({
   // flow reads): a composition without a picking affordance can add nothing.
   const directoryFlowAvailable = useDirectoryFlow(occupied => occupied)
   const groupBy = useStore(s => s.groupBy)
-  const orderBy = useStore(s => s.orderBy)
   const groupExpansion = useStore(s => s.groupExpansion)
-  const sessionOrderByAccount = useStore(s => s.sessionOrderByAccount)
-  const sessionUpdatedAtByAccount = useStore(s => s.sessionUpdatedAtByAccount)
-  const currentBlankSessionId = useSessions((state) => {
-    const current = state.current
-    return current !== undefined && state.byId[current]?.blank === true ? current : undefined
-  })
-  const currentBlankAccount = currentBlankSessionId === undefined
-    ? undefined
-    : (workspaces.find(workspace => workspace.sessionIds.includes(currentBlankSessionId))
-      ?.workspaceId as string | undefined) ?? UNGROUPED_KEY
-  const promotedBlank = useRef<{ sessionId: SessionId; accountKey: string } | undefined>(undefined)
+  const initialCutoff = useRef(Date.now())
+  const storedCutoff = useStore(s => s.attentionCutoff)
+  const cutoff = attentionCutoff(storedCutoff, initialCutoff.current)
   useEffect(() => {
-    if (currentBlankSessionId === undefined || currentBlankAccount === undefined) {
-      promotedBlank.current = undefined
-      return
-    }
-    if (promotedBlank.current?.sessionId === currentBlankSessionId
-      && promotedBlank.current.accountKey === currentBlankAccount) return
-    promotedBlank.current = { sessionId: currentBlankSessionId, accountKey: currentBlankAccount }
-    for (const accountKey of new Set([currentBlankAccount, FLAT_SESSION_ORDER_KEY])) {
-      const previous = sessionOrderByAccount[accountKey] ?? []
-      actions.setSessionOrder(accountKey, [
-        currentBlankSessionId,
-        ...previous.filter(id => id !== currentBlankSessionId),
-      ])
-    }
-  }, [actions.setSessionOrder, currentBlankAccount, currentBlankSessionId, sessionOrderByAccount])
+    if (storedCutoff !== cutoff) actions.setAttentionCutoff(cutoff)
+  }, [storedCutoff, cutoff, actions.setAttentionCutoff])
   useEffect(() => {
     if (workspacePhase !== 'ready') return
     actions.retainAccountKeys([
@@ -1234,9 +930,7 @@ export function WorkspaceBrowser({
           {wide && (
             <ViewOptionsMenu
               groupBy={groupBy}
-              orderBy={orderBy}
               onGroupPick={(mode) => { actions.setGroupBy(mode) }}
-              onOrderPick={(mode) => { actions.setOrderBy(mode) }}
               t={t}
             />
           )}
@@ -1298,6 +992,15 @@ export function WorkspaceBrowser({
 
       {/* Always-mounted seat keeps the region's flex slot while the list
           itself is wide-only. */}
+      {wide && normalizedQuery === '' && groupBy === 'workspace' && (
+        <button
+          type="button"
+          className={css.attentionHint}
+          onClick={() => { actions.setGroupBy('flat') }}
+        >
+          切到时间列表使用关注线
+        </button>
+      )}
       <div className={css.listArea}>
         {wide && (normalizedQuery !== ''
           ? (
@@ -1318,11 +1021,8 @@ export function WorkspaceBrowser({
                 useSessions={useSessions} open={open} loadMoreSessions={loadMoreSessions} forkSession={forkSession}
                 onSessionRename={onSessionRename} onSessionArchive={onSessionArchive}
                 archivedSessionIds={archivedSessionIds}
-                orderBy={orderBy}
-                sessionOrderByAccount={sessionOrderByAccount}
-                sessionUpdatedAtByAccount={sessionUpdatedAtByAccount}
-                syncSessionOrderAccount={actions.syncSessionOrderAccount}
-                setSessionOrder={actions.setSessionOrder}
+                cutoff={cutoff}
+                setCutoff={actions.setAttentionCutoff}
                 t={t}
               />
             )
@@ -1336,16 +1036,10 @@ export function WorkspaceBrowser({
                 workspaces={workspaces}
                 groupExpansion={groupExpansion}
                 setGroupExpanded={actions.setGroupExpanded}
-                sessionOrderByAccount={sessionOrderByAccount}
-                sessionUpdatedAtByAccount={sessionUpdatedAtByAccount}
-                syncSessionOrderAccount={actions.syncSessionOrderAccount}
-                setSessionOrder={actions.setSessionOrder}
                 archivedSessionIds={archivedSessionIds}
                 startSession={startSession}
                 open={open}
                 insertWorkspaceBefore={insertWorkspaceBefore}
-                insertSessionBefore={insertSessionBefore}
-                orderBy={orderBy}
                 home={home}
                 t={t}
                 onRenameRequest={(workspaceId, currentTitle) => {

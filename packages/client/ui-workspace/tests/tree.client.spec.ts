@@ -46,6 +46,9 @@ describe('deriveGroups', () => {
     const grouped = deriveGroups(sessions, [workspace('project', ['awaiting'])], noArchive, view(['project']))
     expect(grouped[0]!.sessions[0]).toMatchObject({ pendingInteraction: 'plan-review', running: true })
     expect(deriveFlat(sessions, noArchive)[0]).toMatchObject({ pendingInteraction: 'plan-review', running: true })
+    // Composed rows have no first-prompt field in the current list metadata ABI.
+    expect(grouped[0]!.sessions[0]).not.toHaveProperty('firstPrompt')
+    expect(deriveFlat(sessions, noArchive)[0]).not.toHaveProperty('firstPrompt')
   })
 
   it('puts only real unaccounted Sessions in the trailing Ungrouped group', () => {
@@ -394,14 +397,14 @@ describe('deriveSearchResults', () => {
 describe('createWorkspaceViewStore', () => {
   it('stores grouping, ordering, Workspace expansion, and recent-session view order', () => {
     const store = createWorkspaceViewStore().create()
-    expect(store.getSnapshot().groupBy).toBe('workspace')
+    expect(store.getSnapshot().groupBy).toBe('flat')
     expect(store.getSnapshot().orderBy).toBe('updated')
-    store.actions.setGroupBy('flat')
+    store.actions.setGroupBy('workspace')
     store.actions.setOrderBy('updated')
     store.actions.setGroupExpanded('alpha', true)
     store.actions.syncSessionOrderAccount('alpha', ['two', 'one'], { one: 1, two: 2 })
     store.actions.setSessionOrder('alpha', ['one', 'two'])
-    expect(store.getSnapshot().groupBy).toBe('flat')
+    expect(store.getSnapshot().groupBy).toBe('workspace')
     expect(store.getSnapshot()).toMatchObject({
       orderBy: 'updated',
       groupExpansion: { alpha: true },
