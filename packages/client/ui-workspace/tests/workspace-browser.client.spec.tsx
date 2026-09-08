@@ -26,7 +26,11 @@ const wid = (id: string) => id as WorkspaceId
 const summary = (id: string, updatedAt: number, overrides: Partial<SessionSummary> = {}): SessionSummary => ({
   id: sid(id), displayTitle: id, running: false, blank: false, updatedAt, ...overrides,
 })
-const sessionState = (items: readonly SessionSummary[], overrides: Partial<SessionListState> = {}): SessionListState => ({
+type PageableSessionFixture = SessionListState & {
+  readonly hasMore?: boolean
+  readonly loadingMore?: boolean
+}
+const sessionState = (items: readonly SessionSummary[], overrides: Partial<PageableSessionFixture> = {}): PageableSessionFixture => ({
   ids: items.map(item => item.id),
   byId: Object.fromEntries(items.map(item => [item.id, item])),
   current: undefined,
@@ -95,6 +99,7 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}, groupBy?: 'worksp
     startSession: vi.fn(),
     open: vi.fn(),
     loadMoreSessions: vi.fn(async () => {}),
+    loadFirstPrompt: vi.fn(async () => undefined),
     searchSessions: vi.fn(async () => ({ items: [], hasMore: false })),
     searchResultLimit: 20,
     renameSession: vi.fn(async () => {}),
@@ -268,22 +273,26 @@ describe('WorkspaceBrowser', () => {
       { length: count },
       (_, index) => summary(`hidden-${index + 1}`, count - index),
     ))
+    const firstPage = pages[0]
+    if (firstPage === undefined) throw new Error('initial underfill fixture page is missing')
     const b = mountGrouped({
-      useSessions: hook(sessionState(pages[0], { hasMore: false, loadingMore: false })),
-      useWorkspaces: hook(workspaceState([], pages[0].map(item => item.id))),
+      useSessions: hook(sessionState(firstPage, { hasMore: false, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([], firstPage.map(item => item.id))),
       loadMoreSessions,
     })
     const list = screen.getByRole('tree', { name: '会话' })
     setScrollMetrics(list, { clientHeight: 400, scrollHeight: 100, scrollTop: 0 })
     rerender(b, {
-      useSessions: hook(sessionState(pages[0], { hasMore: true, loadingMore: false })),
+      useSessions: hook(sessionState(firstPage, { hasMore: true, loadingMore: false })),
     })
 
     for (let page = 1; page <= 3; page += 1) {
       await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(page) })
+      const nextPage = pages[page]
+      if (nextPage === undefined) throw new Error('next underfill fixture page is missing')
       rerender(b, {
-        useSessions: hook(sessionState(pages[page], { hasMore: true, loadingMore: false })),
-        useWorkspaces: hook(workspaceState([], pages[page].map(item => item.id))),
+        useSessions: hook(sessionState(nextPage, { hasMore: true, loadingMore: false })),
+        useWorkspaces: hook(workspaceState([], nextPage.map(item => item.id))),
       })
       await act(async () => {
         requests[page - 1]?.resolve()
