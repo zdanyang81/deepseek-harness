@@ -354,6 +354,7 @@ describe('divider pointer ownership', () => {
     expect(loaded.button.getAttribute('aria-label')).toMatch(/^关注分界线/)
     expect(screen.queryByText('↑ 关注 · 可忽略 ↓')).toBeNull()
     expect(screen.queryByText('分界在更早历史 ↓')).toBeNull()
+    loaded.view.unmount()
     const paged = mount(10, true)
     expect(paged.button.title).toContain('更早历史')
     expect(screen.queryByText('分界在更早历史 ↓')).toBeNull()
