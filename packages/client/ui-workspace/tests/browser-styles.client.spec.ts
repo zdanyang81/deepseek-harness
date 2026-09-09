@@ -39,7 +39,7 @@ describe('WorkspaceBrowser.module.css list', () => {
   const listArea = declarations('.listArea')
   const list = declarations('.list')
 
-  it('reserves a real 32px track around the 24px handle rather than overlaying Session titles', () => {
+  it('reserves a real 32px track and right-aligns a 28x20 handle with the Session time column', () => {
     const divider = declarationsFrom(attentionCss, '.divider')
     const handle = declarationsFrom(attentionCss, '.handle')
     expect(declarations('.flatList')?.get('display')).toBe('grid')
@@ -48,9 +48,14 @@ describe('WorkspaceBrowser.module.css list', () => {
     expect(divider?.get('position')).toBe('relative')
     expect(divider?.get('height')).toBe('32px')
     expect(divider?.get('grid-row')).toBe('var(--attention-gap-row)')
+    expect(divider?.get('margin-inline')).toBe('8px')
+    expect(divider?.get('justify-content')).toBe('flex-end')
     expect(divider?.get('transform')).toBeUndefined()
-    expect(handle?.get('height')).toBe('24px')
+    expect(handle?.get('width')).toBe('28px')
+    expect(handle?.get('height')).toBe('20px')
     expect(handle?.get('box-sizing')).toBe('border-box')
+    expect(rowDeclarations('.sessionRow')?.get('padding')).toBe('0 8px')
+    expect(declarationsFrom(attentionCss, '.caption')).toBeUndefined()
     expect(declarations('.flatList > [data-attention-row]')?.get('grid-row')).toBe('var(--attention-row)')
     expect(declarations('.flatList > .sessionOverflowButton')?.get('grid-row')).toBe('var(--attention-footer-row)')
   })

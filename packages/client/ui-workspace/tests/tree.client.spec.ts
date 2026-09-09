@@ -400,13 +400,15 @@ describe('createWorkspaceViewStore', () => {
     expect(store.getSnapshot().groupBy).toBe('flat')
     expect(store.getSnapshot().orderBy).toBe('updated')
     store.actions.setGroupBy('workspace')
-    store.actions.setOrderBy('updated')
+    store.actions.setOrderBy('manual')
+    store.actions.setAttentionManualGap(1)
     store.actions.setGroupExpanded('alpha', true)
     store.actions.syncSessionOrderAccount('alpha', ['two', 'one'], { one: 1, two: 2 })
     store.actions.setSessionOrder('alpha', ['one', 'two'])
     expect(store.getSnapshot().groupBy).toBe('workspace')
     expect(store.getSnapshot()).toMatchObject({
-      orderBy: 'updated',
+      orderBy: 'manual',
+      attentionManualGap: 1,
       groupExpansion: { alpha: true },
       sessionOrderByAccount: { alpha: ['one', 'two'] },
       sessionUpdatedAtByAccount: { alpha: { one: 1, two: 2 } },

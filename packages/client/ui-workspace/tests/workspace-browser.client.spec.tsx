@@ -131,13 +131,14 @@ function rerender(b: ReturnType<typeof mount>, overrides: Partial<WorkspaceBrows
 }
 
 describe('WorkspaceBrowser', () => {
-  it('opens a genuinely fresh browser in the time list with its native attention line and no Manual option', () => {
+  it('opens a genuinely fresh browser in the time list with its native attention line and a Manual option', () => {
     expect(localStorage.getItem('dsh.workspace.view.v5')).toBeNull()
     const b = mount({
       useSessions: hook(sessionState([summary('newer', 300), summary('older', 100)])),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['older', 'newer'])])),
     })
     expect(b.store.getSnapshot().groupBy).toBe('flat')
+    expect(b.store.getSnapshot().orderBy).toBe('updated')
     expect(screen.getByRole('button', { name: /关注分界线/ })).toBeTruthy()
     expect(screen.queryByText('alpha')).toBeNull()
     expect(screen.queryByRole('button', { name: '切到时间列表使用关注线' })).toBeNull()
@@ -146,7 +147,9 @@ describe('WorkspaceBrowser', () => {
     ])
     fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
     expect(screen.getByRole('menuitem', { name: '单列表' }).querySelector('svg')).toBeTruthy()
-    expect(screen.queryByRole('menuitem', { name: '手动排序' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '手动排序' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: '手动排序' }).querySelector('svg')).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '最近更新' }).querySelector('svg')).toBeTruthy()
   })
 
   it('workspace hover card shows a POSIX home descendant as ~', () => {
@@ -437,10 +440,10 @@ describe('WorkspaceBrowser', () => {
     expect(screen.getByText('分组方式')).toBeTruthy() // the menu heading label
     expect(screen.getByRole('separator')).toBeTruthy()
     expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
-      '按工作区', '单列表', '最近更新',
+      '按工作区', '单列表', '手动排序', '最近更新',
     ])
     expect(screen.getByRole('menuitem', { name: '按工作区' }).querySelector('svg')).toBeTruthy()
-    expect(screen.queryByRole('menuitem', { name: '手动排序' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '手动排序' }).querySelector('svg')).toBeNull()
     expect(screen.getByRole('menuitem', { name: '最近更新' }).querySelector('svg')).toBeTruthy()
     fireEvent.click(screen.getByRole('menuitem', { name: '单列表' }))
     // Store-driven flip: title changes, rows flatten newest-first, headers gone.
@@ -452,7 +455,7 @@ describe('WorkspaceBrowser', () => {
 
     // Back to workspace grouping through the same menu.
     fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
-    expect(screen.queryByRole('menuitem', { name: '手动排序' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: '手动排序' })).toBeTruthy()
     fireEvent.click(screen.getByRole('menuitem', { name: '按工作区' }))
     expect(b.store.getSnapshot().groupBy).toBe('workspace')
     expect(screen.getByText('工作区')).toBeTruthy()
@@ -464,7 +467,7 @@ describe('WorkspaceBrowser', () => {
     expect(b.store.getSnapshot().groupBy).toBe('workspace')
   })
 
-  it('ignores persisted manual flat order, disables row dragging and restores strict recency', () => {
+  it('honors persisted manual flat order, native row dragging, and remount without activity promotion', () => {
     const insertSessionBefore = vi.fn(async () => {})
     const sessions = sessionState([summary('three', 1), summary('one', 3), summary('two', 2)])
     const workspaces = workspaceState([workspace('alpha', ['one']), workspace('beta', ['two'])])
@@ -476,20 +479,91 @@ describe('WorkspaceBrowser', () => {
     })
     const rows = screen.getAllByRole('treeitem')
     expect(rows.map(row => row.textContent)).toEqual([
-      expect.stringContaining('one'), expect.stringContaining('two'), expect.stringContaining('three'),
+      expect.stringContaining('two'), expect.stringContaining('three'), expect.stringContaining('one'),
     ])
-    for (const row of rows) expect(row.draggable).toBe(false)
-    fireEvent.dragStart(rows[0]!, { dataTransfer: dragData() })
-    fireDrag(rows[2]!, 'drop', 180)
+    for (const row of rows) expect(row.draggable).toBe(true)
+    const [two, , one] = rows as [HTMLElement, HTMLElement, HTMLElement]
+    one.getBoundingClientRect = () => ({
+      top: 200, bottom: 234, left: 0, right: 200, width: 200, height: 34, x: 0, y: 200, toJSON: () => ({}),
+    })
+    fireEvent.dragStart(two, { dataTransfer: dragData() })
+    fireDrag(one, 'dragOver', 220)
+    fireEvent.dragEnd(two)
+    expect(b.store.getSnapshot().sessionOrderByAccount[FLAT_SESSION_ORDER_KEY]).toEqual(['two', 'three', 'one'])
     expect(insertSessionBefore).not.toHaveBeenCalled()
-    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual(rows.map(row => row.textContent))
-    b.view.unmount()
-    const restored = mount({ useSessions: hook(sessions), useWorkspaces: hook(workspaces) })
-    expect(restored.store.getSnapshot().groupBy).toBe('flat')
-    expect(restored.store.getSnapshot().orderBy).toBe('updated')
+    fireEvent.dragStart(two, { dataTransfer: dragData() })
+    fireDrag(one, 'dragOver', 220)
+    fireDrag(one, 'drop', 220)
+    expect(insertSessionBefore).not.toHaveBeenCalled()
     expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
-      expect.stringContaining('one'), expect.stringContaining('two'), expect.stringContaining('three'),
+      expect.stringContaining('three'), expect.stringContaining('one'), expect.stringContaining('two'),
     ])
+    expect(b.store.getSnapshot().sessionOrderByAccount[FLAT_SESSION_ORDER_KEY]).toEqual(['three', 'one', 'two'])
+    rerender(b, { useSessions: hook(sessionState([summary('three', 1), summary('one', 3), summary('two', 999)])) })
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('three'), expect.stringContaining('one'), expect.stringContaining('two'),
+    ])
+    b.view.unmount()
+    const restored = mount({ useSessions: hook(sessionState([summary('three', 1), summary('one', 3), summary('two', 999)])), useWorkspaces: hook(workspaces) })
+    expect(restored.store.getSnapshot().groupBy).toBe('flat')
+    expect(restored.store.getSnapshot().orderBy).toBe('manual')
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('three'), expect.stringContaining('one'), expect.stringContaining('two'),
+    ])
+  })
+
+  it('keeps an independent manual gap across mode switch, remount, drag, removal and paging', () => {
+    const items = [summary('a', 300), summary('b', 200), summary('c', 100)]
+    const b = mount({ useSessions: hook(sessionState(items)) })
+    act(() => { b.store.actions.setAttentionCutoff(200) })
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('1')
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '手动排序' }))
+    expect(b.store.getSnapshot().orderBy).toBe('manual')
+    expect(b.store.getSnapshot().attentionManualGap).toBe(1)
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-cutoff')).toBe('manual')
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-index')).toBe('1')
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-manual-gap]')?.getAttribute('data-attention-manual-gap')).toBe('1')
+    const handle = screen.getByRole('button', { name: /关注分界线/ })
+    fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    expect(b.store.getSnapshot().attentionManualGap).toBe(2)
+    expect(b.store.getSnapshot().attentionCutoff).toBe(200)
+    act(() => { b.store.actions.setOrderBy('updated') })
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('1')
+    expect(b.store.getSnapshot().attentionManualGap).toBe(2)
+    act(() => { b.store.actions.setOrderBy('manual') })
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-manual-gap]')?.getAttribute('data-attention-manual-gap')).toBe('2')
+    const [a, , c] = screen.getAllByRole('treeitem') as [HTMLElement, HTMLElement, HTMLElement]
+    c.getBoundingClientRect = () => ({
+      top: 200, bottom: 234, left: 0, right: 200, width: 200, height: 34, x: 0, y: 200, toJSON: () => ({}),
+    })
+    fireEvent.dragStart(a, { dataTransfer: dragData() })
+    fireDrag(c, 'dragOver', 220)
+    fireDrag(c, 'drop', 220)
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('b'), expect.stringContaining('c'), expect.stringContaining('a'),
+    ])
+    expect(b.store.getSnapshot().attentionManualGap).toBe(2)
+    rerender(b, { useSessions: hook(sessionState([summary('c', 100), summary('a', 300)])) })
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('c'), expect.stringContaining('a'),
+    ])
+    expect(b.store.getSnapshot().attentionManualGap).toBe(1)
+    rerender(b, { useSessions: hook(sessionState([summary('c', 100), summary('a', 300), summary('d', 50)], { hasMore: true })) })
+    expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([
+      expect.stringContaining('c'), expect.stringContaining('a'), expect.stringContaining('d'),
+    ])
+    expect(b.store.getSnapshot().attentionManualGap).toBe(1)
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-index]')?.getAttribute('data-attention-index')).toBe('1')
+    b.view.unmount()
+    const restored = mount({ useSessions: hook({ ...sessionState([]), phase: 'pending' as const }) })
+    expect(restored.store.getSnapshot().attentionManualGap).toBe(1)
+    rerender(restored, { useSessions: hook(sessionState([summary('c', 100), summary('a', 300), summary('d', 50)])) })
+    expect(restored.store.getSnapshot().orderBy).toBe('manual')
+    expect(restored.store.getSnapshot().attentionManualGap).toBe(1)
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-cutoff')).toBe('manual')
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-index')).toBe('1')
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-manual-gap]')?.getAttribute('data-attention-manual-gap')).toBe('1')
   })
 
   it('expands a group on click and opens a session row', () => {
