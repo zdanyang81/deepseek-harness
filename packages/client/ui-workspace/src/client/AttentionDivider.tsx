@@ -1,4 +1,4 @@
-/** A list-owned pointer gesture. Only pointerup after a held, moved drag commits the active channel. */
+/** A list-owned pointer gesture. Pointerdown starts the drag; only pointerup after a moved drag commits. */
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useRef } from 'react'
 import { type AttentionBoundary, attentionIndex, attentionManualIndex, attentionPointerGap, attentionRowsRetainPrefix, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
 import css from './AttentionDivider.module.css'
@@ -35,7 +35,6 @@ type Gesture = {
   gap: number
   savedGap: number
   rows: Props['rows']
-  timer: ReturnType<typeof setTimeout>
   frame: number
   dispose: () => void
 }
@@ -96,19 +95,12 @@ export function AttentionDivider({
     button.setPointerCapture(event.pointerId)
     const g: Gesture = {
       pointerId: event.pointerId, x: event.clientX, y: event.clientY, lastY: event.clientY,
-      active: false, moved: false, cutoff, savedCutoff: cutoff, gap: index, savedGap: index,
+      active: true, moved: false, cutoff, savedCutoff: cutoff, gap: index, savedGap: index,
       rows, frame: 0,
-      timer: setTimeout(() => {
-        /* v8 ignore next -- dispose() clears this timeout before a cancelled gesture can fire. */
-        if (!reconcile(g)) return
-        g.active = true
-        if (latest.current.count === undefined) setPreview(g.cutoff)
-        else latest.current.count.setPreview(g.gap)
-        g.frame = requestAnimationFrame(tick)
-      }, 450),
       dispose: () => {
-        clearTimeout(g.timer)
-        cancelAnimationFrame(g.frame)
+        const frame = g.frame
+        g.frame = 0
+        cancelAnimationFrame(frame)
         window.removeEventListener('pointermove', move)
         window.removeEventListener('pointerup', up)
         window.removeEventListener('pointercancel', abort)
@@ -132,26 +124,23 @@ export function AttentionDivider({
     }
     function tick(): void {
       /* v8 ignore next -- dispose() cancels the animation frame before a cancelled gesture can tick. */
-      if (!reconcile(g)) return
-      if (g.moved) {
-        const bounds = scroller.getBoundingClientRect()
-        const before = scroller.scrollTop
-        scroller.scrollTop += attentionScrollSpeed(g.lastY, bounds.top, bounds.bottom)
-        // Native scrolling triggers the existing catalog loader; never call a second page loader.
-        if (scroller.scrollTop !== before) choose()
-      }
+      if (g.frame === 0 || !reconcile(g)) return
+      const bounds = scroller.getBoundingClientRect()
+      const before = scroller.scrollTop
+      scroller.scrollTop += attentionScrollSpeed(g.lastY, bounds.top, bounds.bottom)
+      // Native scrolling triggers the existing catalog loader; never call a second page loader.
+      if (scroller.scrollTop !== before) choose()
       g.frame = requestAnimationFrame(tick)
     }
     function move(e: PointerEvent): void {
       if (e.pointerId !== g.pointerId || !reconcile(g)) return
-      const distance = Math.hypot(e.clientX - g.x, e.clientY - g.y)
-      if (!g.active) {
-        if (distance > 10) cancel()
-        return
-      }
       e.preventDefault()
       g.lastY = e.clientY
-      if (distance > 3) { g.moved = true; choose() }
+      if (Math.hypot(e.clientX - g.x, e.clientY - g.y) > 3) {
+        g.moved = true
+        choose()
+        if (g.frame === 0) g.frame = requestAnimationFrame(tick)
+      }
     }
     function up(e: PointerEvent): void {
       if (e.pointerId !== g.pointerId) return
@@ -181,6 +170,8 @@ export function AttentionDivider({
     window.addEventListener('blur', abort)
     window.addEventListener('keydown', key)
     button.addEventListener('lostpointercapture', abort)
+    if (latest.current.count === undefined) setPreview(g.cutoff)
+    else latest.current.count.setPreview(g.gap)
   }
 
   const beyondPage = count === undefined
@@ -195,13 +186,13 @@ export function AttentionDivider({
       <button
         type="button"
         className={css.handle}
-        aria-label="关注分界线：上方需关注，下方可忽略；长按后拖动"
+        aria-label="关注分界线：上方需关注，下方可忽略；按下后拖动"
         aria-pressed={count === undefined ? preview !== null : count.preview !== null}
         title={beyondPage
-          ? '分界点在更早历史中；继续加载可定位。长按可重新设置。'
+          ? '分界点在更早历史中；继续加载可定位。按下后可重新设置。'
           : count === undefined
-            ? '上方需关注 · 下方可忽略。长按450毫秒后拖动；同一时间按会话ID稳定分界。'
-            : '上方需关注 · 下方可忽略。长按450毫秒后拖动。'}
+            ? '上方需关注 · 下方可忽略。按下后拖动；同一时间按会话ID稳定分界。'
+            : '上方需关注 · 下方可忽略。按下后拖动。'}
         onPointerDown={down}
         onClickCapture={(e) => { e.preventDefault(); e.stopPropagation() }}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
