@@ -22,6 +22,49 @@ export function attentionTime(cutoff: AttentionBoundary): number {
   return typeof cutoff === 'number' ? cutoff : cutoff.timestamp
 }
 
+function validCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && Number.isSafeInteger(value)
+}
+
+/**
+ * Clamp a manual-mode row count to the inclusive loaded range `[0, length]`.
+ * @param length - current loaded row count.
+ * @param gap - requested count of rows above the line.
+ * @returns the clamped count.
+ */
+export function attentionManualIndex(length: number, gap: number): number {
+  return Math.max(0, Math.min(length, gap))
+}
+
+/**
+ * Decode a persisted manual gap; missing or invalid values use the updated-mode visual index.
+ * @param value - stored count, or any invalid persist payload.
+ * @param fallback - current Last-updated visual index used only when `value` is missing or invalid.
+ * @param length - current loaded row count.
+ * @returns the clamped count.
+ */
+export function attentionManualGap(value: unknown, fallback: number, length: number): number {
+  return attentionManualIndex(length, validCount(value) ? value : fallback)
+}
+
+/**
+ * Keep an independent count when the catalog membership changes.
+ * Reorder and tail append leave the count unchanged; removing an above-line row decrements it.
+ * @param previousIds - last accepted manual display order.
+ * @param nextIds - latest manual display order.
+ * @param gap - persisted count of rows above the line.
+ * @returns the clamped count for `nextIds`.
+ */
+export function nextAttentionManualGap(
+  previousIds: readonly string[],
+  nextIds: readonly string[],
+  gap: number,
+): number {
+  const previousAbove = previousIds.slice(0, gap)
+  const removedAbove = previousAbove.filter(id => !nextIds.includes(id)).length
+  return attentionManualIndex(nextIds.length, gap - removedAbove)
+}
+
 /** First ignored row in the same timestamp-descending, ID-ascending order as the catalog. */
 export function attentionIndex(rows: readonly TimedRow[], cutoff: AttentionBoundary): number {
   const time = attentionTime(cutoff)

@@ -57,3 +57,7 @@ Search is a header action while collapsed and expands across the title and trail
 ## Testing
 
 Domain and Host tests cover durable Workspace moves, no-op and invalid anchors, restart recovery, full-order RPC responses, order frames, and one Workspace snapshot per Host-stream baseline. Runtime tests cover optimistic order, frame/response precedence, overlapping rejection rollback to Host-confirmed order, reconnect baselines, and New Session target priority. UI tests cover five-row folding, transient expansion reset, pruning persisted state after Workspace removal, order-preserving mode switches, one-time recent-update and New Session promotion, Manual drag retention after the first prompt, browser-local Ungrouped and flat-list drag persistence, hierarchy-free flat-row leading spacing, selected view indicators, expanded-section Workspace hit testing, an unclipped first insertion boundary, outside-list Workspace and Session drops, search collapse rules, and compact CSS dimensions.
+
+## Related
+
+Office flat-list Manual order and its independent gray line are owned by [Sidebar attention Manual order and independent gray line](2026-09-09-sidebar-attention-manual-restore.md). That decision does not use the Last-updated activity-promotion policy in this note.

@@ -22,11 +22,13 @@ import type { WorkspaceBrowserProps } from './contract/slots.ts'
 import type { SessionNode } from './tree.ts'
 import { deriveFlat, deriveGroups, deriveSearchResults, UNGROUPED_KEY } from './tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './rows/Rows.tsx'
-import { FLAT_SESSION_ORDER_KEY } from './stores.ts'
+import { FLAT_SESSION_ORDER_KEY, type SessionOrderBy } from './stores.ts'
 import { WorkspacePickFlow } from './WorkspacePicker.tsx'
 import css from './WorkspaceBrowser.module.css'
 import { AttentionDivider } from './AttentionDivider.tsx'
-import { type AttentionBoundary, attentionCutoff, attentionIndex } from './attention.ts'
+import {
+  type AttentionBoundary, attentionCutoff, attentionIndex, attentionManualGap, nextAttentionManualGap,
+} from './attention.ts'
 
 /**
  * Column slide length (--ds-transition-duration-slow): rail-search focus waits it out —
@@ -68,6 +70,28 @@ function sanitizeSearchQuery(value: string): string {
 /** Immutable membership toggle for the local expand-all array. */
 function toggled(list: readonly string[], key: string): string[] {
   return list.includes(key) ? list.filter(k => k !== key) : [...list, key]
+}
+
+/** Reconcile a stored view order with the current visible Session account. Unseen ids append at the tail. */
+function reconciledSessionOrder(
+  sessionIds: readonly SessionNode['id'][],
+  stored: readonly string[] | undefined,
+): SessionNode['id'][] {
+  if (stored === undefined) return [...sessionIds]
+  const byId = new Map(sessionIds.map(id => [id as string, id]))
+  const ordered: SessionNode['id'][] = []
+  const included = new Set<string>()
+  for (const key of stored) {
+    const id = byId.get(key)
+    if (id === undefined || included.has(key)) continue
+    ordered.push(id)
+    included.add(key)
+  }
+  for (const id of sessionIds) {
+    if (included.has(id)) continue
+    ordered.push(id)
+  }
+  return ordered
 }
 
 /**
@@ -193,9 +217,11 @@ function useSessionCatalogAutoLoad({
 }
 
 /** Grouping and ordering menu; own open state so it resets with the wide chrome. */
-function ViewOptionsMenu({ groupBy, onGroupPick, t }: {
+function ViewOptionsMenu({ groupBy, orderBy, onGroupPick, onOrderPick, t }: {
   groupBy: 'workspace' | 'flat'
+  orderBy: SessionOrderBy
   onGroupPick: (mode: 'workspace' | 'flat') => void
+  onOrderPick: (mode: SessionOrderBy) => void
   t: WorkspaceBrowserProps['t']
 }) {
   const [open, setOpen] = useState(false)
@@ -209,11 +235,13 @@ function ViewOptionsMenu({ groupBy, onGroupPick, t }: {
         { id: 'flat', label: t('groupBy.flat') },
         { type: 'separator' as const, id: 'order-by-separator' },
         { type: 'label' as const, id: 'order-by', text: t('orderBy.label') },
+        { id: 'manual', label: t('orderBy.manual') },
         { id: 'updated', label: t('orderBy.updated') },
       ]}
-      selectedIds={[groupBy, 'updated']}
+      selectedIds={[groupBy, orderBy]}
       onSelect={(id) => {
         if (id === 'workspace' || id === 'flat') onGroupPick(id)
+        else if (id === 'manual' || id === 'updated') onOrderPick(id)
         setOpen(false)
       }}
       align="end"
@@ -485,18 +513,85 @@ function SessionTree({
   )
 }
 
-/** Strict timestamp projection; the boundary is viewing state, never session membership. */
+/** In-flight flat-list Session drag: source identity plus the current insert marker. */
+interface SessionDragState {
+  sessionId: SessionNode['id']
+  over: { id: SessionNode['id']; half: 'before' | 'after' } | null
+}
+
+/** Flat list: strict recency, or stored Manual order with an independent count-based divider. */
 function FlatList({
   useSessions, open, loadMoreSessions, forkSession, onSessionRename, onSessionArchive, archivedSessionIds,
-  cutoff, setCutoff, t,
+  cutoff, setCutoff, orderBy, sessionOrder, setSessionOrder, manualGap, setManualGap, t,
 }: Pick<SessionTreeProps,
   'useSessions' | 'open' | 'loadMoreSessions' | 'forkSession' | 'onSessionRename' | 'onSessionArchive' | 'archivedSessionIds' | 't'
-> & { cutoff: AttentionBoundary; setCutoff: (value: AttentionBoundary) => void }) {
+> & {
+  cutoff: AttentionBoundary
+  setCutoff: (value: AttentionBoundary) => void
+  orderBy: SessionOrderBy
+  sessionOrder: readonly string[] | undefined
+  setSessionOrder: (order: string[]) => void
+  manualGap: number | null | undefined
+  setManualGap: (gap: number) => void
+}) {
   const list = useSessions(s => s) as PageableSessionListState
-  const rows = useMemo(() => deriveFlat(list, archivedSessionIds), [list, archivedSessionIds])
-  // The list owns one transient boundary shared by its reserved track and stable handle.
+  const recencyRows = useMemo(() => deriveFlat(list, archivedSessionIds), [list, archivedSessionIds])
+  const sessionIds = useMemo(() => recencyRows.map(row => row.id), [recencyRows])
+  useEffect(() => {
+    if (orderBy !== 'manual' || list.phase !== 'ready') return
+    const next = reconciledSessionOrder(sessionIds, sessionOrder)
+    if (sessionOrder === undefined
+      || next.length !== sessionOrder.length
+      || next.some((id, index) => id !== sessionOrder[index])) {
+      setSessionOrder(next.map(id => id as string))
+    }
+  }, [list.phase, orderBy, sessionIds, sessionOrder, setSessionOrder])
+  const manualRows = useMemo(() => {
+    const byId = new Map(recencyRows.map(row => [row.id, row]))
+    return reconciledSessionOrder(sessionIds, sessionOrder).flatMap((id) => {
+      const row = byId.get(id)
+      return row === undefined ? [] : [row]
+    })
+  }, [recencyRows, sessionIds, sessionOrder])
+  const rows = orderBy === 'manual' ? manualRows : recencyRows
+  const previousManualIds = useRef<readonly string[] | undefined>(undefined)
+  const fallbackIndex = attentionIndex(recencyRows, cutoff)
+  useEffect(() => {
+    const ids = manualRows.map(row => row.id as string)
+    if (manualGap == null) {
+      previousManualIds.current = ids
+      if (orderBy === 'manual') setManualGap(attentionManualGap(null, fallbackIndex, ids.length))
+      return
+    }
+    const next = previousManualIds.current === undefined
+      ? attentionManualGap(manualGap, fallbackIndex, ids.length)
+      : nextAttentionManualGap(previousManualIds.current, ids, manualGap)
+    previousManualIds.current = ids
+    if (manualGap !== next) setManualGap(next)
+  }, [fallbackIndex, manualGap, manualRows, orderBy, setManualGap])
   const [preview, setPreview] = useState<AttentionBoundary | null>(null)
-  const gapIndex = attentionIndex(rows, preview ?? cutoff)
+  const [countPreview, setCountPreview] = useState<number | null>(null)
+  const resolvedGap = attentionManualGap(manualGap, fallbackIndex, rows.length)
+  const gapIndex = orderBy === 'manual' ? (countPreview ?? resolvedGap) : attentionIndex(rows, preview ?? cutoff)
+  const [drag, setDrag] = useState<SessionDragState | null>(null)
+  const dropCommitted = useRef(false)
+  useNativeDragAcceptance(orderBy === 'manual' && drag !== null)
+  const commitDrag = (activeDrag: SessionDragState, over: NonNullable<SessionDragState['over']>): void => {
+    if (dropCommitted.current) return
+    dropCommitted.current = true
+    setDrag(null)
+    const targetIndex = rows.findIndex(row => row.id === over.id)
+    if (targetIndex === -1) return
+    const anchor = over.half === 'before' ? over.id : rows[targetIndex + 1]?.id
+    if (anchor === activeDrag.sessionId) return
+    const sourceIndex = rows.findIndex(row => row.id === activeDrag.sessionId)
+    const anchorIndex = anchor === undefined ? rows.length : rows.findIndex(row => row.id === anchor)
+    if (sourceIndex !== -1 && (anchorIndex === sourceIndex || anchorIndex === sourceIndex + 1)) return
+    const nextOrder = rows.map(row => row.id).filter(id => id !== activeDrag.sessionId)
+    const insertAt = anchor === undefined ? nextOrder.length : nextOrder.indexOf(anchor)
+    nextOrder.splice(insertAt === -1 ? nextOrder.length : insertAt, 0, activeDrag.sessionId)
+    setSessionOrder(nextOrder.map(id => id as string))
+  }
   const autoLoad = useSessionCatalogAutoLoad({
     hasMore: list.hasMore === true,
     loadingMore: list.loadingMore === true,
@@ -518,7 +613,10 @@ function FlatList({
         {rows.length === 0 && <div className={css.empty}>{t('empty.none')}</div>}
         {rows.length > 0 && (
           <AttentionDivider rows={rows} listRef={autoLoad.listRef} cutoff={cutoff} preview={preview} setPreview={setPreview}
-            commit={setCutoff} hasMore={list.hasMore === true} />
+            commit={setCutoff} hasMore={list.hasMore === true}
+            count={orderBy === 'manual'
+              ? { gap: resolvedGap, preview: countPreview, setPreview: setCountPreview, commit: setManualGap }
+              : undefined} />
         )}
         {rows.map((node, rowIndex) => (
           <div key={node.id} data-attention-row={node.id}
@@ -526,6 +624,25 @@ function FlatList({
             <SessionNodeItem
               node={node} currentId={list.current} now={now} onOpen={open}
               onRename={onSessionRename} onFork={forkSession} onArchive={onSessionArchive} flat t={t}
+              drag={orderBy !== 'manual' ? undefined : {
+                start: () => {
+                  dropCommitted.current = false
+                  setDrag({ sessionId: node.id, over: null })
+                },
+                active: drag !== null,
+                marker: drag !== null && drag.over?.id === node.id ? drag.over.half : null,
+                hover: (half) => {
+                  setDrag(current => current === null ? current : { ...current, over: { id: node.id, half } })
+                },
+                drop: (half) => {
+                  if (drag !== null) commitDrag(drag, { id: node.id, half })
+                },
+                end: () => {
+                  if (drag?.over !== null && drag?.over !== undefined) commitDrag(drag, drag.over)
+                  else setDrag(null)
+                  dropCommitted.current = false
+                },
+              }}
             />
           </div>
         ))}
@@ -649,6 +766,9 @@ export function WorkspaceBrowser({
   // flow reads): a composition without a picking affordance can add nothing.
   const directoryFlowAvailable = useDirectoryFlow(occupied => occupied)
   const groupBy = useStore(s => s.groupBy)
+  const orderBy = useStore(s => s.orderBy)
+  const sessionOrder = useStore(s => s.sessionOrderByAccount[FLAT_SESSION_ORDER_KEY])
+  const storedManualGap = useStore(s => s.attentionManualGap)
   const groupExpansion = useStore(s => s.groupExpansion)
   const initialCutoff = useRef(Date.now())
   const storedCutoff = useStore(s => s.attentionCutoff)
@@ -664,6 +784,9 @@ export function WorkspaceBrowser({
       ...workspaces.map(workspace => workspace.workspaceId as string),
     ])
   }, [actions.retainAccountKeys, workspacePhase, workspaces])
+  const persistFlatSessionOrder = useCallback((order: string[]) => {
+    actions.setSessionOrder(FLAT_SESSION_ORDER_KEY, order)
+  }, [actions.setSessionOrder])
   // The query outlives the tree and the input (both wide-only) so collapsing
   // does not silently drop an in-progress filter.
   const [query, setQuery] = useState('')
@@ -930,7 +1053,9 @@ export function WorkspaceBrowser({
           {wide && (
             <ViewOptionsMenu
               groupBy={groupBy}
+              orderBy={orderBy}
               onGroupPick={(mode) => { actions.setGroupBy(mode) }}
+              onOrderPick={(mode) => { actions.setOrderBy(mode) }}
               t={t}
             />
           )}
@@ -1023,6 +1148,11 @@ export function WorkspaceBrowser({
                 archivedSessionIds={archivedSessionIds}
                 cutoff={cutoff}
                 setCutoff={actions.setAttentionCutoff}
+                orderBy={orderBy}
+                sessionOrder={sessionOrder}
+                setSessionOrder={persistFlatSessionOrder}
+                manualGap={storedManualGap}
+                setManualGap={actions.setAttentionManualGap}
                 t={t}
               />
             )

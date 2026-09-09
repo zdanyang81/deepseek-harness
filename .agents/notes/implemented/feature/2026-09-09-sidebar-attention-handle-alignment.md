@@ -31,3 +31,7 @@ Sighted users infer the cutoff from the gray line and the 28×20 handle on the t
 ## Testing
 
 CSS contract tests pin the 32px track, 28×20 handle, shared 8px inset, right-edge alignment, and the absence of a `.caption` rule. Divider tests keep the hold, cancel, paging, and keyboard coverage and add an assertion that the visible 关注/可忽略 and later-history captions are gone while the accessible name remains.
+
+## Related
+
+This note owns only the divider presentation rules. Manual session order and the independent count-based gray line are owned by [Sidebar attention Manual order and independent gray line](2026-09-09-sidebar-attention-manual-restore.md).

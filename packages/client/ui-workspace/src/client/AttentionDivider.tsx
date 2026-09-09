@@ -1,7 +1,15 @@
-/** A list-owned pointer gesture. Only pointerup after a held, moved drag commits time. */
+/** A list-owned pointer gesture. Only pointerup after a held, moved drag commits the active channel. */
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useRef } from 'react'
-import { type AttentionBoundary, attentionIndex, attentionPointerGap, attentionRowsRetainPrefix, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
+import { type AttentionBoundary, attentionIndex, attentionManualIndex, attentionPointerGap, attentionRowsRetainPrefix, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
 import css from './AttentionDivider.module.css'
+
+/** Independent row-count channel used only in Manual session order. */
+type CountChannel = {
+  gap: number
+  preview: number | null
+  setPreview: (value: number | null) => void
+  commit: (gap: number) => void
+}
 
 type Props = {
   rows: readonly { readonly id: string; readonly updatedAt: number }[]
@@ -11,6 +19,8 @@ type Props = {
   setPreview: (value: AttentionBoundary | null) => void
   commit: (cutoff: AttentionBoundary) => void
   hasMore: boolean
+  /** When set, the divider commits a persisted row count instead of a time cutoff. */
+  count?: CountChannel | undefined
 }
 
 type Gesture = {
@@ -22,6 +32,8 @@ type Gesture = {
   moved: boolean
   cutoff: AttentionBoundary
   savedCutoff: AttentionBoundary
+  gap: number
+  savedGap: number
   rows: Props['rows']
   timer: ReturnType<typeof setTimeout>
   frame: number
@@ -29,23 +41,32 @@ type Gesture = {
 }
 
 /** Occupy one real grid track without reparenting the handle or owning Session nodes. */
-export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, commit, hasMore }: Props) {
+export function AttentionDivider({
+  rows, listRef, cutoff, preview, setPreview, commit, hasMore, count,
+}: Props) {
   const dividerRef = useRef<HTMLDivElement>(null)
   const gesture = useRef<Gesture | null>(null)
-  const latest = useRef({ rows, cutoff, commit })
-  latest.current = { rows, cutoff, commit }
+  const latest = useRef({ rows, cutoff, commit, count })
+  latest.current = { rows, cutoff, commit, count }
   const effective = preview ?? cutoff
-  const index = attentionIndex(rows, effective)
+  const index = count === undefined
+    ? attentionIndex(rows, effective)
+    : attentionManualIndex(rows.length, count.preview ?? count.gap)
 
   function cancel(): void {
     gesture.current?.dispose()
     gesture.current = null
     setPreview(null)
+    count?.setPreview(null)
   }
 
   function reconcile(g: Gesture): boolean {
+    /* v8 ignore next -- stale-gesture backstop: down() refuses a second capture, and cancel() nulls the current gesture before remaining listeners run. */
     if (gesture.current !== g) return false
-    if (latest.current.cutoff !== g.savedCutoff || !attentionRowsRetainPrefix(g.rows, latest.current.rows)) {
+    const committed = latest.current.count === undefined
+      ? latest.current.cutoff !== g.savedCutoff
+      : latest.current.count.gap !== g.savedGap
+    if (committed || !attentionRowsRetainPrefix(g.rows, latest.current.rows)) {
       cancel()
       return false
     }
@@ -58,7 +79,7 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
   useEffect(() => {
     const g = gesture.current
     if (g !== null) reconcile(g)
-  }, [rows, cutoff])
+  }, [rows, cutoff, count?.gap])
   useEffect(() => cancel, [])
 
   function down(event: ReactPointerEvent<HTMLButtonElement>): void {
@@ -73,11 +94,14 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
     button.setPointerCapture(event.pointerId)
     const g: Gesture = {
       pointerId: event.pointerId, x: event.clientX, y: event.clientY, lastY: event.clientY,
-      active: false, moved: false, cutoff, savedCutoff: cutoff, rows, frame: 0,
+      active: false, moved: false, cutoff, savedCutoff: cutoff, gap: index, savedGap: index,
+      rows, frame: 0,
       timer: setTimeout(() => {
+        /* v8 ignore next -- dispose() clears this timeout before a cancelled gesture can fire. */
         if (!reconcile(g)) return
         g.active = true
-        setPreview(g.cutoff)
+        if (latest.current.count === undefined) setPreview(g.cutoff)
+        else latest.current.count.setPreview(g.gap)
         g.frame = requestAnimationFrame(tick)
       }, 450),
       dispose: () => {
@@ -96,10 +120,16 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
     function choose(): void {
       const nodes = [...scroller.querySelectorAll<HTMLElement>('[data-attention-row]')]
       const gap = attentionPointerGap(nodes.map(node => node.getBoundingClientRect()), reservedTrack.getBoundingClientRect(), g.lastY)
-      g.cutoff = cutoffAtGap(latest.current.rows, gap, Date.now())
-      setPreview(g.cutoff)
+      g.gap = gap
+      if (latest.current.count === undefined) {
+        g.cutoff = cutoffAtGap(latest.current.rows, gap, Date.now())
+        setPreview(g.cutoff)
+        return
+      }
+      latest.current.count.setPreview(gap)
     }
     function tick(): void {
+      /* v8 ignore next -- dispose() cancels the animation frame before a cancelled gesture can tick. */
       if (!reconcile(g)) return
       if (g.moved) {
         const bounds = scroller.getBoundingClientRect()
@@ -123,6 +153,7 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
     }
     function up(e: PointerEvent): void {
       if (e.pointerId !== g.pointerId) return
+      /* v8 ignore next -- dispose() removes this listener before a cancelled gesture can release. */
       if (!reconcile(g)) return
       const bounds = scroller.getBoundingClientRect()
       const inside = e.clientX >= bounds.left && e.clientX <= bounds.right
@@ -130,8 +161,12 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
       const shouldCommit = g.active && g.moved && inside
       if (shouldCommit) { g.lastY = e.clientY; choose() }
       const value = g.cutoff
+      const gap = g.gap
+      const countCommit = latest.current.count?.commit
       cancel()
-      if (shouldCommit) latest.current.commit(value)
+      if (!shouldCommit) return
+      if (countCommit !== undefined) countCommit(gap)
+      else latest.current.commit(value)
     }
     function abort(e: Event): void {
       if ('pointerId' in e && e.pointerId !== g.pointerId) return
@@ -146,18 +181,25 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
     button.addEventListener('lostpointercapture', abort)
   }
 
-  const beyondPage = index === rows.length && hasMore && attentionTime(cutoff) < (rows[rows.length - 1]?.updatedAt ?? 0)
+  const beyondPage = count === undefined
+    && index === rows.length && hasMore && attentionTime(cutoff) < (rows[rows.length - 1]?.updatedAt ?? 0)
   return (
     <div ref={dividerRef} className={css.divider} style={{ '--attention-gap-row': index + 1 } as CSSProperties}
-      data-attention-cutoff={attentionTime(effective)}
-      data-attention-boundary={JSON.stringify(effective)} data-attention-index={index}>
+      data-attention-cutoff={count === undefined ? attentionTime(effective) : undefined}
+      data-attention-boundary={count === undefined ? JSON.stringify(effective) : undefined}
+      data-attention-manual-gap={count === undefined ? undefined : index}
+      data-attention-index={index}>
       <span className={css.line} />
       <button
         type="button"
         className={css.handle}
         aria-label="关注分界线：上方需关注，下方可忽略；长按后拖动"
-        aria-pressed={preview !== null}
-        title={beyondPage ? '分界点在更早历史中；继续加载可定位。长按可重新设置。' : '上方需关注 · 下方可忽略。长按450毫秒后拖动；同一时间按会话ID稳定分界。'}
+        aria-pressed={count === undefined ? preview !== null : count.preview !== null}
+        title={beyondPage
+          ? '分界点在更早历史中；继续加载可定位。长按可重新设置。'
+          : count === undefined
+            ? '上方需关注 · 下方可忽略。长按450毫秒后拖动；同一时间按会话ID稳定分界。'
+            : '上方需关注 · 下方可忽略。长按450毫秒后拖动。'}
         onPointerDown={down}
         onClickCapture={(e) => { e.preventDefault(); e.stopPropagation() }}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
@@ -166,10 +208,11 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
           e.preventDefault()
           cancel()
           const gap = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length : index + (e.key === 'ArrowUp' ? -1 : 1)
-          commit(cutoffAtGap(rows, gap, Date.now()))
+          if (count === undefined) commit(cutoffAtGap(rows, gap, Date.now()))
+          else count.commit(attentionManualIndex(rows.length, gap))
         }}
       >
-        <span aria-hidden="true">{preview !== null ? '↕' : '⋮⋮'}</span>
+        <span aria-hidden="true">{(count === undefined ? preview : count.preview) !== null ? '↕' : '⋮⋮'}</span>
       </button>
     </div>
   )
