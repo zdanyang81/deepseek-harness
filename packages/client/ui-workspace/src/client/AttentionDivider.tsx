@@ -1,13 +1,11 @@
 /** A list-owned pointer gesture. Pointerdown starts the drag; only pointerup after a moved drag commits. */
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useRef } from 'react'
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { type AttentionBoundary, attentionIndex, attentionManualIndex, attentionPointerGap, attentionRowsRetainPrefix, attentionTime, attentionScrollSpeed, cutoffAtGap } from './attention.ts'
 import css from './AttentionDivider.module.css'
 
 /** Independent row-count channel used only in Manual session order. */
 type CountChannel = {
   gap: number
-  preview: number | null
-  setPreview: (value: number | null) => void
   commit: (gap: number) => void
 }
 
@@ -15,8 +13,6 @@ type Props = {
   rows: readonly { readonly id: string; readonly updatedAt: number }[]
   listRef: RefObject<HTMLDivElement>
   cutoff: AttentionBoundary
-  preview: AttentionBoundary | null
-  setPreview: (value: AttentionBoundary | null) => void
   commit: (cutoff: AttentionBoundary) => void
   hasMore: boolean
   /** When set, the divider commits a persisted row count instead of a time cutoff. */
@@ -36,27 +32,36 @@ type Gesture = {
   savedGap: number
   rows: Props['rows']
   frame: number
+  layout: () => void
   dispose: () => void
+}
+
+function hideOverlay(ghost: HTMLDivElement | null, marker: HTMLDivElement | null, track: HTMLDivElement | null): void {
+  ghost?.removeAttribute('data-show')
+  marker?.removeAttribute('data-show')
+  if (track !== null) delete track.dataset.attentionPreviewGap
 }
 
 /** Occupy one real grid track without reparenting the handle or owning Session nodes. */
 export function AttentionDivider({
-  rows, listRef, cutoff, preview, setPreview, commit, hasMore, count,
+  rows, listRef, cutoff, commit, hasMore, count,
 }: Props) {
   const dividerRef = useRef<HTMLDivElement>(null)
+  const ghostRef = useRef<HTMLDivElement>(null)
+  const markerRef = useRef<HTMLDivElement>(null)
   const gesture = useRef<Gesture | null>(null)
   const latest = useRef({ rows, cutoff, commit, count })
   latest.current = { rows, cutoff, commit, count }
-  const effective = preview ?? cutoff
+  const [dragging, setDragging] = useState(false)
   const index = count === undefined
-    ? attentionIndex(rows, effective)
-    : attentionManualIndex(rows.length, count.preview ?? count.gap)
+    ? attentionIndex(rows, cutoff)
+    : attentionManualIndex(rows.length, count.gap)
 
   function cancel(): void {
     gesture.current?.dispose()
     gesture.current = null
-    setPreview(null)
-    count?.setPreview(null)
+    hideOverlay(ghostRef.current, markerRef.current, dividerRef.current)
+    setDragging(false)
   }
 
   function reconcile(g: Gesture): boolean {
@@ -74,11 +79,14 @@ export function AttentionDivider({
     return true
   }
 
-  // Row updates reconcile without a cleanup: append-only paging must retain capture and preview.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const g = gesture.current
-    if (g !== null) reconcile(g)
-  }, [rows, cutoff, count?.gap])
+    if (g === null) {
+      hideOverlay(ghostRef.current, markerRef.current, dividerRef.current)
+      return
+    }
+    if (reconcile(g)) g.layout()
+  })
   useEffect(() => cancel, [])
 
   function down(event: ReactPointerEvent<HTMLButtonElement>): void {
@@ -97,6 +105,7 @@ export function AttentionDivider({
       pointerId: event.pointerId, x: event.clientX, y: event.clientY, lastY: event.clientY,
       active: true, moved: false, cutoff, savedCutoff: cutoff, gap: index, savedGap: index,
       rows, frame: 0,
+      layout: () => {},
       dispose: () => {
         const frame = g.frame
         g.frame = 0
@@ -108,20 +117,43 @@ export function AttentionDivider({
         window.removeEventListener('keydown', key)
         button.removeEventListener('lostpointercapture', abort)
         if (button.hasPointerCapture(g.pointerId)) button.releasePointerCapture(g.pointerId)
+        hideOverlay(ghostRef.current, markerRef.current, reservedTrack)
       },
     }
-    gesture.current = g
-    function choose(): void {
+    function layout(): void {
       const nodes = [...scroller.querySelectorAll<HTMLElement>('[data-attention-row]')]
       const gap = attentionPointerGap(nodes.map(node => node.getBoundingClientRect()), reservedTrack.getBoundingClientRect(), g.lastY)
       g.gap = gap
       if (latest.current.count === undefined) {
         g.cutoff = cutoffAtGap(latest.current.rows, gap, Date.now())
-        setPreview(g.cutoff)
-        return
       }
-      latest.current.count.setPreview(gap)
+      const ghost = ghostRef.current
+      const marker = markerRef.current
+      if (ghost === null || marker === null) return
+      ghost.toggleAttribute('data-show', g.moved)
+      marker.toggleAttribute('data-show', g.moved && gap !== g.savedGap)
+      if (g.moved) reservedTrack.dataset.attentionPreviewGap = String(gap)
+      else delete reservedTrack.dataset.attentionPreviewGap
+      if (!g.moved) return
+      const listBox = scroller.getBoundingClientRect()
+      ghost.style.left = `${listBox.left + 8}px`
+      ghost.style.width = `${Math.max(0, listBox.width - 16)}px`
+      ghost.style.top = `${g.lastY}px`
+      if (!marker.hasAttribute('data-show')) return
+      const rects = nodes.map(node => node.getBoundingClientRect())
+      const first = rects[0]
+      const last = rects[rects.length - 1]
+      const y = gap <= 0
+        ? (first?.top ?? listBox.top)
+        : gap >= rects.length
+          ? (last?.bottom ?? listBox.bottom)
+          : (rects[gap]?.top ?? listBox.top)
+      marker.style.left = `${listBox.left}px`
+      marker.style.width = `${Math.max(0, listBox.width - 4)}px`
+      marker.style.top = `${y - 6}px`
     }
+    g.layout = layout
+    gesture.current = g
     function tick(): void {
       /* v8 ignore next -- dispose() cancels the animation frame before a cancelled gesture can tick. */
       if (g.frame === 0 || !reconcile(g)) return
@@ -129,7 +161,7 @@ export function AttentionDivider({
       const before = scroller.scrollTop
       scroller.scrollTop += attentionScrollSpeed(g.lastY, bounds.top, bounds.bottom)
       // Native scrolling triggers the existing catalog loader; never call a second page loader.
-      if (scroller.scrollTop !== before) choose()
+      if (scroller.scrollTop !== before) layout()
       g.frame = requestAnimationFrame(tick)
     }
     function move(e: PointerEvent): void {
@@ -138,7 +170,7 @@ export function AttentionDivider({
       g.lastY = e.clientY
       if (Math.hypot(e.clientX - g.x, e.clientY - g.y) > 3) {
         g.moved = true
-        choose()
+        layout()
         if (g.frame === 0) g.frame = requestAnimationFrame(tick)
       }
     }
@@ -150,7 +182,7 @@ export function AttentionDivider({
       const inside = e.clientX >= bounds.left && e.clientX <= bounds.right
         && e.clientY >= bounds.top && e.clientY <= bounds.bottom
       const shouldCommit = g.active && g.moved && inside
-      if (shouldCommit) { g.lastY = e.clientY; choose() }
+      if (shouldCommit) { g.lastY = e.clientY; layout() }
       const value = g.cutoff
       const gap = g.gap
       const countCommit = latest.current.count?.commit
@@ -170,16 +202,15 @@ export function AttentionDivider({
     window.addEventListener('blur', abort)
     window.addEventListener('keydown', key)
     button.addEventListener('lostpointercapture', abort)
-    if (latest.current.count === undefined) setPreview(g.cutoff)
-    else latest.current.count.setPreview(g.gap)
+    setDragging(true)
   }
 
   const beyondPage = count === undefined
     && index === rows.length && hasMore && attentionTime(cutoff) < (rows[rows.length - 1]?.updatedAt ?? 0)
   return (
     <div ref={dividerRef} className={css.divider} style={{ '--attention-gap-row': index + 1 } as CSSProperties}
-      data-attention-cutoff={count === undefined ? attentionTime(effective) : 'manual' /* overlay locator; not a timestamp */}
-      data-attention-boundary={count === undefined ? JSON.stringify(effective) : undefined}
+      data-attention-cutoff={count === undefined ? attentionTime(cutoff) : 'manual' /* overlay locator; not a timestamp */}
+      data-attention-boundary={count === undefined ? JSON.stringify(cutoff) : undefined}
       data-attention-manual-gap={count === undefined ? undefined : index}
       data-attention-index={index}>
       <span className={css.line} />
@@ -187,7 +218,7 @@ export function AttentionDivider({
         type="button"
         className={css.handle}
         aria-label="关注分界线：上方需关注，下方可忽略；按下后拖动"
-        aria-pressed={count === undefined ? preview !== null : count.preview !== null}
+        aria-pressed={dragging}
         title={beyondPage
           ? '分界点在更早历史中；继续加载可定位。按下后可重新设置。'
           : count === undefined
@@ -205,8 +236,13 @@ export function AttentionDivider({
           else count.commit(attentionManualIndex(rows.length, gap))
         }}
       >
-        <span aria-hidden="true">{(count === undefined ? preview : count.preview) !== null ? '↕' : '⋮⋮'}</span>
+        <span aria-hidden="true">{dragging ? '↕' : '⋮⋮'}</span>
       </button>
+      <div ref={ghostRef} className={css.ghost} data-attention-ghost>
+        <span className={css.line} />
+        <span className={css.handle} aria-hidden="true">↕</span>
+      </div>
+      <div ref={markerRef} className={css.marker} data-attention-marker />
     </div>
   )
 }
