@@ -570,8 +570,10 @@ function FlatList({
     previousManualIds.current = ids
     if (manualGap !== next) setManualGap(next)
   }, [fallbackIndex, list.phase, manualGap, manualRows, orderBy, setManualGap])
+  const [preview, setPreview] = useState<AttentionBoundary | null>(null)
+  const [countPreview, setCountPreview] = useState<number | null>(null)
   const resolvedGap = attentionManualGap(manualGap, fallbackIndex, rows.length)
-  const gapIndex = orderBy === 'manual' ? resolvedGap : attentionIndex(rows, cutoff)
+  const gapIndex = orderBy === 'manual' ? (countPreview ?? resolvedGap) : attentionIndex(rows, preview ?? cutoff)
   const [drag, setDrag] = useState<SessionDragState | null>(null)
   const dropCommitted = useRef(false)
   useNativeDragAcceptance(orderBy === 'manual' && drag !== null)
@@ -611,10 +613,10 @@ function FlatList({
       >
         {rows.length === 0 && <div className={css.empty}>{t('empty.none')}</div>}
         {rows.length > 0 && (
-          <AttentionDivider rows={rows} listRef={autoLoad.listRef} cutoff={cutoff}
+          <AttentionDivider rows={rows} listRef={autoLoad.listRef} cutoff={cutoff} preview={preview} setPreview={setPreview}
             commit={setCutoff} hasMore={list.hasMore === true}
             count={orderBy === 'manual'
-              ? { gap: resolvedGap, commit: setManualGap }
+              ? { gap: resolvedGap, preview: countPreview, setPreview: setCountPreview, commit: setManualGap }
               : undefined} />
         )}
         {rows.map((node, rowIndex) => (
