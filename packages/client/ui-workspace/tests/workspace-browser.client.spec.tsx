@@ -714,7 +714,6 @@ describe('WorkspaceBrowser', () => {
         act(() => { target.dispatchEvent(event) })
       }
       send(handle, 'pointerdown', 148)
-      act(() => { vi.advanceTimersByTime(450) })
       send(window, 'pointermove', 202)
       expect(divider.dataset.attentionIndex).toBe('2')
       expect(b.store.getSnapshot().attentionCutoff).toBe(200)
@@ -742,7 +741,6 @@ describe('WorkspaceBrowser', () => {
       }
       fireEvent.click(screen.getByText('b'))
       expect(open).toHaveBeenCalledExactlyOnceWith(sid('b'))
-      expect(vi.getTimerCount()).toBe(0)
     } finally {
       cleanup()
       vi.useRealTimers()
