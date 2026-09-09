@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { type CSSProperties, createRef, useState } from 'react'
+import { type CSSProperties, createRef } from 'react'
 import { AttentionDivider } from '../src/client/AttentionDivider.tsx'
 import { type AttentionBoundary, attentionCutoff, attentionIndex, attentionManualGap, attentionManualIndex, attentionPointerGap, attentionScrollSpeed, cutoffAtGap, nextAttentionManualGap } from '../src/client/attention.ts'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
@@ -38,11 +38,9 @@ function mount(cutoff: AttentionBoundary = 200, more = false, initialRows = rows
   const commit = vi.fn()
   const open = vi.fn()
   function Fixture({ items }: { items: typeof rows }) {
-    const [preview, setPreview] = useState<AttentionBoundary | null>(null)
-    const gap = attentionIndex(items, preview ?? cutoff)
+    const gap = attentionIndex(items, cutoff)
     return <div ref={listRef}>
-      <AttentionDivider rows={items} listRef={listRef} cutoff={cutoff} preview={preview} setPreview={setPreview}
-        commit={commit} hasMore={more} />
+      <AttentionDivider rows={items} listRef={listRef} cutoff={cutoff} commit={commit} hasMore={more} />
       {items.map((row, index) => (
         <div key={row.id} data-attention-row={row.id} style={{ '--attention-row': index + 1 + (index >= gap ? 1 : 0) } as CSSProperties}
           onClick={() => { open(row.id) }}>{row.id}</div>
@@ -138,17 +136,13 @@ describe('divider pointer ownership', () => {
     const commit = vi.fn()
     const countCommit = vi.fn()
     function Fixture() {
-      const [preview, setPreview] = useState<AttentionBoundary | null>(null)
-      const [countPreview, setCountPreview] = useState<number | null>(null)
       return <div ref={listRef}>
-        <AttentionDivider rows={rows} listRef={listRef} cutoff={200} preview={preview} setPreview={setPreview}
-          commit={commit} hasMore={false}
-          count={{ gap: 1, preview: countPreview, setPreview: setCountPreview, commit: countCommit }} />
-        {rows.map((row, index) => {
-          const gap = countPreview ?? 1
-          return <div key={row.id} data-attention-row={row.id}
-            style={{ '--attention-row': index + 1 + (index >= gap ? 1 : 0) } as CSSProperties}>{row.id}</div>
-        })}
+        <AttentionDivider rows={rows} listRef={listRef} cutoff={200} commit={commit} hasMore={false}
+          count={{ gap: 1, commit: countCommit }} />
+        {rows.map((row, index) => (
+          <div key={row.id} data-attention-row={row.id}
+            style={{ '--attention-row': index + 1 + (index >= 1 ? 1 : 0) } as CSSProperties}>{row.id}</div>
+        ))}
       </div>
     }
     const view = render(<Fixture />)
@@ -177,12 +171,9 @@ describe('divider pointer ownership', () => {
     const commit = vi.fn()
     const countCommit = vi.fn()
     function Fixture({ gap }: { gap: number }) {
-      const [preview, setPreview] = useState<AttentionBoundary | null>(null)
-      const [countPreview, setCountPreview] = useState<number | null>(null)
       return <div ref={listRef}>
-        <AttentionDivider rows={rows} listRef={listRef} cutoff={200} preview={preview} setPreview={setPreview}
-          commit={commit} hasMore={true}
-          count={{ gap, preview: countPreview, setPreview: setCountPreview, commit: countCommit }} />
+        <AttentionDivider rows={rows} listRef={listRef} cutoff={200} commit={commit} hasMore={true}
+          count={{ gap, commit: countCommit }} />
       </div>
     }
     const view = render(<Fixture gap={1} />)
@@ -207,12 +198,9 @@ describe('divider pointer ownership', () => {
     const commit = vi.fn()
     const countCommit = vi.fn()
     function Fixture({ gap }: { gap: number }) {
-      const [preview, setPreview] = useState<AttentionBoundary | null>(null)
-      const [countPreview, setCountPreview] = useState<number | null>(null)
       return <div ref={listRef}>
-        <AttentionDivider rows={rows} listRef={listRef} cutoff={200} preview={preview} setPreview={setPreview}
-          commit={commit} hasMore={false}
-          count={{ gap, preview: countPreview, setPreview: setCountPreview, commit: countCommit }} />
+        <AttentionDivider rows={rows} listRef={listRef} cutoff={200} commit={commit} hasMore={false}
+          count={{ gap, commit: countCommit }} />
       </div>
     }
     const view = render(<Fixture gap={1} />)
@@ -231,7 +219,7 @@ describe('divider pointer ownership', () => {
     const emptyRef = createRef<HTMLDivElement>()
     const commit = vi.fn()
     const empty = render(<div ref={emptyRef}>
-      <AttentionDivider rows={[]} listRef={emptyRef} cutoff={200} preview={null} setPreview={() => {}} commit={commit} hasMore={true} />
+      <AttentionDivider rows={[]} listRef={emptyRef} cutoff={200} commit={commit} hasMore={true} />
     </div>)
     const emptyButton = screen.getByRole('button', { name: /关注分界线/ })
     pointer(emptyButton, 'pointerdown')
@@ -253,7 +241,7 @@ describe('divider pointer ownership', () => {
     const listRef = createRef<HTMLDivElement>()
     const commit = vi.fn()
     const detached = render(
-      <AttentionDivider rows={rows} listRef={listRef} cutoff={200} preview={null} setPreview={() => {}} commit={commit} hasMore={false} />,
+      <AttentionDivider rows={rows} listRef={listRef} cutoff={200} commit={commit} hasMore={false} />,
     )
     pointer(screen.getByRole('button', { name: /关注分界线/ }), 'pointerdown')
     act(() => vi.advanceTimersByTime(500))
@@ -319,18 +307,23 @@ describe('divider pointer ownership', () => {
       }
     }
   })
-  it('keeps the held handle and capture stable as its real track changes, then restores the saved gap on cancellation', () => {
+  it('keeps the saved track still while a ghost follows the pointer, then restores it on cancellation', () => {
     const b = mount()
     const capture = vi.spyOn(b.button, 'setPointerCapture')
     const release = vi.spyOn(b.button, 'releasePointerCapture')
     vi.spyOn(b.button, 'hasPointerCapture').mockReturnValue(true)
     const savedTrack = b.divider.style.getPropertyValue('--attention-gap-row')
+    const savedRows = [...b.list.querySelectorAll<HTMLElement>('[data-attention-row]')].map(row => row.style.getPropertyValue('--attention-row'))
     pointer(b.button, 'pointerdown')
     pointer(window, 'pointermove', 150, 202)
-    expect(b.divider.dataset.attentionIndex).toBe('2')
-    expect(b.divider.style.getPropertyValue('--attention-gap-row')).toBe('3')
+    expect(b.divider.dataset.attentionIndex).toBe('1')
+    expect(b.divider.style.getPropertyValue('--attention-gap-row')).toBe(savedTrack)
+    expect(b.divider.dataset.attentionPreviewGap).toBe('2')
+    expect(b.divider.querySelector('[data-attention-ghost]')?.hasAttribute('data-show')).toBe(true)
+    expect(b.divider.querySelector('[data-attention-marker]')?.hasAttribute('data-show')).toBe(true)
+    expect([...b.list.querySelectorAll<HTMLElement>('[data-attention-row]')].map(row => row.style.getPropertyValue('--attention-row'))).toEqual(savedRows)
     for (let i = 0; i < 4; i++) pointer(window, 'pointermove', 150, 202)
-    expect(b.divider.dataset.attentionIndex).toBe('2')
+    expect(b.divider.dataset.attentionIndex).toBe('1')
     expect(screen.getByRole('button', { name: /关注分界线/ })).toBe(b.button)
     expect(capture).toHaveBeenCalledTimes(1)
     expect(release).not.toHaveBeenCalled()
@@ -338,6 +331,8 @@ describe('divider pointer ownership', () => {
     expect(release).toHaveBeenCalledTimes(1)
     expect(b.divider.style.getPropertyValue('--attention-gap-row')).toBe(savedTrack)
     expect(b.divider.dataset.attentionIndex).toBe('1')
+    expect(b.divider.dataset.attentionPreviewGap).toBeUndefined()
+    expect(b.divider.querySelector('[data-attention-ghost]')?.hasAttribute('data-show')).toBe(false)
     expect(b.commit).not.toHaveBeenCalled()
     fireEvent.click(screen.getByText('b'))
     expect(b.open).toHaveBeenCalledExactlyOnceWith('b')
@@ -367,6 +362,8 @@ describe('divider pointer ownership', () => {
     const b = mount()
     pointer(b.button, 'pointerdown')
     pointer(window, 'pointermove', 150, 202)
+    expect(b.divider.dataset.attentionIndex).toBe('1')
+    expect(b.divider.dataset.attentionPreviewGap).toBe('2')
     expect(b.commit).not.toHaveBeenCalled()
     pointer(window, 'pointerup', 150, 202)
     pointer(window, 'pointerup', 150, 202)
@@ -376,12 +373,14 @@ describe('divider pointer ownership', () => {
     const b = mount()
     pointer(b.button, 'pointerdown')
     pointer(window, 'pointermove', 150, 202)
-    expect(b.divider.dataset.attentionIndex).toBe('2')
+    expect(b.divider.dataset.attentionPreviewGap).toBe('2')
+    expect(b.divider.dataset.attentionIndex).toBe('1')
     if (kind === 'Escape') fireEvent.keyDown(window, { key: 'Escape' })
     else pointer(kind === 'lostpointercapture' ? b.button : window, kind)
     pointer(window, 'pointerup', 150, 202)
     expect(b.commit).not.toHaveBeenCalled()
     expect(b.divider.dataset.attentionIndex).toBe('1')
+    expect(b.divider.dataset.attentionPreviewGap).toBeUndefined()
     expect(b.divider.style.getPropertyValue('--attention-gap-row')).toBe('2')
     expect([...b.list.querySelectorAll<HTMLElement>('[data-attention-row]')].map(row => row.style.getPropertyValue('--attention-row'))).toEqual(['1', '3', '4'])
     fireEvent.click(b.button)
@@ -421,7 +420,8 @@ describe('divider pointer ownership', () => {
     expect(release).not.toHaveBeenCalled()
     b.list.scrollTop = 64
     pointer(window, 'pointermove', 150, y)
-    expect(b.divider.dataset.attentionIndex).toBe(index)
+    expect(b.divider.dataset.attentionIndex).toBe('1')
+    expect(b.divider.dataset.attentionPreviewGap).toBe(index)
     pointer(window, 'pointerup', 150, y)
     expect(b.commit).toHaveBeenCalledExactlyOnceWith({ timestamp: 25, id: 'e', side })
     expect(release).toHaveBeenCalledTimes(1)
