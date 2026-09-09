@@ -185,7 +185,7 @@ export function AttentionDivider({
     && index === rows.length && hasMore && attentionTime(cutoff) < (rows[rows.length - 1]?.updatedAt ?? 0)
   return (
     <div ref={dividerRef} className={css.divider} style={{ '--attention-gap-row': index + 1 } as CSSProperties}
-      data-attention-cutoff={count === undefined ? attentionTime(effective) : undefined}
+      data-attention-cutoff={count === undefined ? attentionTime(effective) : 'manual' /* overlay locator; not a timestamp */}
       data-attention-boundary={count === undefined ? JSON.stringify(effective) : undefined}
       data-attention-manual-gap={count === undefined ? undefined : index}
       data-attention-index={index}>

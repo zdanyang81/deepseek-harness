@@ -516,6 +516,8 @@ describe('WorkspaceBrowser', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: '手动排序' }))
     expect(b.store.getSnapshot().orderBy).toBe('manual')
     expect(b.store.getSnapshot().attentionManualGap).toBe(1)
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-cutoff')).toBe('manual')
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-index')).toBe('1')
     expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-manual-gap]')?.getAttribute('data-attention-manual-gap')).toBe('1')
     const handle = screen.getByRole('button', { name: /关注分界线/ })
     fireEvent.keyDown(handle, { key: 'ArrowDown' })
@@ -552,6 +554,8 @@ describe('WorkspaceBrowser', () => {
     const restored = mount({ useSessions: hook(sessionState([summary('c', 100), summary('a', 300), summary('d', 50)])) })
     expect(restored.store.getSnapshot().orderBy).toBe('manual')
     expect(restored.store.getSnapshot().attentionManualGap).toBe(1)
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-cutoff')).toBe('manual')
+    expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-cutoff]')?.getAttribute('data-attention-index')).toBe('1')
     expect(screen.getByRole('button', { name: /关注分界线/ }).closest('[data-attention-manual-gap]')?.getAttribute('data-attention-manual-gap')).toBe('1')
   })
 

@@ -160,7 +160,9 @@ describe('divider pointer ownership', () => {
     const divider = button.closest<HTMLElement>('[data-attention-index]')!
     vi.spyOn(divider, 'getBoundingClientRect').mockImplementation(() => rect(100 + Number(divider.dataset.attentionIndex) * 32))
     expect(divider.getAttribute('data-attention-manual-gap')).toBe('1')
-    expect(divider.getAttribute('data-attention-cutoff')).toBeNull()
+    expect(divider.getAttribute('data-attention-cutoff')).toBe('manual')
+    expect(divider.getAttribute('data-attention-index')).toBe('1')
+    expect(divider.hasAttribute('data-attention-cutoff')).toBe(true)
     pointer(button, 'pointerdown')
     act(() => vi.advanceTimersByTime(450))
     pointer(window, 'pointermove', 150, 202)
