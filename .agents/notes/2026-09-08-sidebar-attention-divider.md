@@ -1,5 +1,7 @@
 # Sidebar attention divider with strict timestamp ordering
 
+English | [中文](2026-09-08-sidebar-attention-divider.zh.md)
+
 Status: isolated candidate; not deployed.
 
 ## Decision

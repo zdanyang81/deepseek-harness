@@ -6,7 +6,12 @@ function validTime(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 8.64e15
 }
 
-/** Decode durable viewing state; missing/invalid values use this mount's fixed initialization time. */
+/**
+ * Decode durable viewing state, preserving valid legacy numeric cutoffs.
+ * @param value - persisted viewing-state value.
+ * @param initialTime - fixed mount time used for missing or invalid state.
+ * @returns the validated cutoff or initialization time.
+ */
 export function attentionCutoff(value: unknown, initialTime: number): AttentionBoundary {
   if (validTime(value)) return value
   if (typeof value === 'object' && value !== null && 'timestamp' in value && validTime(value.timestamp)
@@ -17,7 +22,11 @@ export function attentionCutoff(value: unknown, initialTime: number): AttentionB
   return initialTime
 }
 
-/** Numeric time of either a legacy cutoff or a timestamp/identity boundary. */
+/**
+ * Read the timestamp shared by legacy numeric and identity-qualified cutoffs.
+ * @param cutoff - validated cutoff.
+ * @returns its timestamp in milliseconds.
+ */
 export function attentionTime(cutoff: AttentionBoundary): number {
   return typeof cutoff === 'number' ? cutoff : cutoff.timestamp
 }
@@ -65,7 +74,12 @@ export function nextAttentionManualGap(
   return attentionManualIndex(nextIds.length, gap - removedAbove)
 }
 
-/** First ignored row in the same timestamp-descending, ID-ascending order as the catalog. */
+/**
+ * Locate the first ignored row using the catalog's timestamp and identity ordering.
+ * @param rows - rows sorted by descending timestamp, then ascending ID.
+ * @param cutoff - saved time and optional equal-time identity position.
+ * @returns the first ignored index, or the row count if none are ignored.
+ */
 export function attentionIndex(rows: readonly TimedRow[], cutoff: AttentionBoundary): number {
   const time = attentionTime(cutoff)
   const index = rows.findIndex((row) => {
@@ -76,7 +90,13 @@ export function attentionIndex(rows: readonly TimedRow[], cutoff: AttentionBound
   return index < 0 ? rows.length : index
 }
 
-/** Resolve each exact row gap, including equal-time neighbors, without persisting a row number. */
+/**
+ * Describe a row gap without persisting an index that activity could invalidate.
+ * @param rows - rows sorted by descending timestamp, then ascending ID.
+ * @param gap - requested insertion index, including positions before and after the list.
+ * @param now - current time for an empty list or the position before its first row.
+ * @returns the timestamp and optional identity locating that gap.
+ */
 export function cutoffAtGap(rows: readonly TimedRow[], gap: number, now: number): AttentionBoundary {
   const first = rows[0]
   const last = rows[rows.length - 1]
@@ -116,7 +136,13 @@ export function attentionPointerGap(rows: readonly VerticalRect[], gap: Vertical
   return index < 0 ? rows.length : index
 }
 
-/** Edge speed in pixels/frame; only the owned list scrolls. */
+/**
+ * Compute signed edge-scroll speed for the owned list, not the page.
+ * @param y - pointer's viewport Y coordinate.
+ * @param top - list viewport's upper edge.
+ * @param bottom - list viewport's lower edge.
+ * @returns pixels per animation frame; negative scrolls toward earlier rows.
+ */
 export function attentionScrollSpeed(y: number, top: number, bottom: number): number {
   const edge = Math.min(48, (bottom - top) / 3)
   if (edge <= 0) return 0
