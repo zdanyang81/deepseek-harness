@@ -54,8 +54,6 @@ describe('WorkspaceBrowser.module.css list', () => {
     expect(handle?.get('width')).toBe('28px')
     expect(handle?.get('height')).toBe('20px')
     expect(handle?.get('box-sizing')).toBe('border-box')
-    expect(declarationsFrom(attentionCss, '.ghost')?.get('position')).toBe('fixed')
-    expect(declarationsFrom(attentionCss, '.marker')?.get('position')).toBe('fixed')
     expect(rowDeclarations('.sessionRow')?.get('padding')).toBe('0 8px')
     expect(declarationsFrom(attentionCss, '.caption')).toBeUndefined()
     expect(declarations('.flatList > [data-attention-row]')?.get('grid-row')).toBe('var(--attention-row)')

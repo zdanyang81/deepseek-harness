@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-09-sidebar-attention-immediate-drag.md
-2026-09-09-sidebar-attention-immediate-drag.md: fc95afe04f3b514e5a90597ae79f58b4be445731
-2026-09-09-sidebar-attention-immediate-drag.zh.md: db20de7d74d964b7c3440db4b0b21163fffceecd
+2026-09-09-sidebar-attention-immediate-drag.md: a43851a0185a96c0380de30e26ed986779af7d0b
+2026-09-09-sidebar-attention-immediate-drag.zh.md: 7d812f0e8e3d0a874cefde375024055d048292a5

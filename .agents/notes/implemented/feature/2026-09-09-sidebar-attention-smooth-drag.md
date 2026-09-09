@@ -22,8 +22,8 @@ The divider keeps its saved grid track until pointerup. After a 3px move it show
 
 ## Consequences
 
-Dragging the gray line now matches Manual session reordering: the catalog stays still, a ghost follows the pointer, and the saved gap moves only on a successful release. Keyboard movement still commits immediately because it is not a pointer drag. Overlay pin/hide still reads the saved track.
+This still-catalog presentation shipped, then the office user asked to put the reserved 32px row back in the list. Current pointer drag is [Sidebar attention list-walk drag](2026-09-09-sidebar-attention-list-walk.md). Keyboard movement still commits immediately because it is not a pointer drag.
 
 ## Testing
 
-Divider tests keep press-then-drag-then-save and cancel paths, and assert that `--attention-row` / `--attention-gap-row` stay on the saved gap while `data-attention-preview-gap`, the ghost, and the insert marker follow the pointer. Workspace browser tests keep the same press-to-drag path without relocating Session tracks until commit.
+The tests that required a still catalog and a ghost were replaced when [Sidebar attention list-walk drag](2026-09-09-sidebar-attention-list-walk.md) restored live grid preview.

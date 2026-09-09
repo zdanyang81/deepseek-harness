@@ -22,8 +22,8 @@ Status: implemented
 
 ## 后果
 
-拖灰线现在和手动排序拖会话一样：目录不动，ghost 跟手，只有成功松手才改已保存位置。键盘移动仍立即提交，因为它不是指针拖动。overlay 置顶/隐藏仍读已保存轨道。
+这套目录不动的展示上过现网，之后办公室用户要求把 32px 预留行放回列表。当前指针拖动见[侧栏关注分界线列表内跟手](2026-09-09-sidebar-attention-list-walk.zh.md)。键盘移动仍立即提交，因为它不是指针拖动。
 
 ## 测试
 
-分界线测试覆盖按下后拖动再保存和取消路径，并断言 `--attention-row` / `--attention-gap-row` 停在已保存缝，而 `data-attention-preview-gap`、ghost 和插入标记跟随指针。工作区浏览器测试沿用同一条按下即拖路径，提交前不改会话轨道。
+要求目录不动和 ghost 的测试已随[侧栏关注分界线列表内跟手](2026-09-09-sidebar-attention-list-walk.zh.md)恢复 live grid 预览而替换。

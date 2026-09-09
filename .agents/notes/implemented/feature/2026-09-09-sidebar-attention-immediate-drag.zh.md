@@ -22,7 +22,7 @@ Status: implemented
 
 ## 后果
 
-按下手柄立刻接管灰线，不必再等。误点仍不改已保存位置。键盘、分页、overlay 定位和两种排序保持不变。拖动预览不再移动会话轨道；跟随指针的展示见[侧栏关注分界线流畅拖动](2026-09-09-sidebar-attention-smooth-drag.zh.md)。
+按下手柄立刻接管灰线，不必再等。误点仍不改已保存位置。键盘、分页、overlay 定位和两种排序保持不变。会让会话让位的 live 预览见[侧栏关注分界线列表内跟手](2026-09-09-sidebar-attention-list-walk.zh.md)。
 
 ## 测试
 

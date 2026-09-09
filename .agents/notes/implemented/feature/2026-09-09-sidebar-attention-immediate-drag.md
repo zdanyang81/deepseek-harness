@@ -22,7 +22,7 @@ Pointerdown on the 28×20 handle starts the drag immediately: it captures the po
 
 ## Consequences
 
-Pressing the handle immediately arms the gray line. Users can drag without waiting. Accidental taps still leave the saved position unchanged. Keyboard, paging, overlay locators, and both sort modes stay as they are. The live preview no longer relocates Session tracks; that follow-the-pointer presentation is in [Sidebar attention smooth drag](2026-09-09-sidebar-attention-smooth-drag.md).
+Pressing the handle immediately arms the gray line. Users can drag without waiting. Accidental taps still leave the saved position unchanged. Keyboard, paging, overlay locators, and both sort modes stay as they are. The live preview that relocates Session tracks is in [Sidebar attention list-walk drag](2026-09-09-sidebar-attention-list-walk.md).
 
 ## Testing
 
