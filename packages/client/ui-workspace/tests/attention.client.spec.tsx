@@ -30,6 +30,7 @@ function pointer(target: EventTarget, type: string, x = 150, y?: number, id = 1)
   const e = new Event(type, { bubbles: true, cancelable: true })
   Object.assign(e, { clientX: x, clientY: y ?? (bounds.top + bounds.bottom) / 2, pointerId: id, isPrimary: true, button: 0, pointerType: 'touch' })
   act(() => { target.dispatchEvent(e) })
+  return e
 }
 
 function mount(cutoff: AttentionBoundary = 200, more = false, initialRows = rows) {
@@ -163,7 +164,8 @@ describe('divider pointer ownership', () => {
     expect(divider.getAttribute('data-attention-cutoff')).toBe('manual')
     expect(divider.getAttribute('data-attention-index')).toBe('1')
     expect(divider.hasAttribute('data-attention-cutoff')).toBe(true)
-    pointer(button, 'pointerdown')
+    expect(pointer(button, 'pointerdown').defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(button)
     act(() => vi.advanceTimersByTime(450))
     pointer(window, 'pointermove', 150, 202)
     pointer(window, 'pointerup', 150, 202)

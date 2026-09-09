@@ -61,7 +61,7 @@ export function AttentionDivider({
   }
 
   function reconcile(g: Gesture): boolean {
-    /* v8 ignore next -- stale-gesture backstop: down() refuses a second capture, and cancel() nulls the current gesture before remaining listeners run. */
+    /* v8 ignore next -- down() rejects a second capture; cancel() clears the gesture before remaining listeners run. */
     if (gesture.current !== g) return false
     const committed = latest.current.count === undefined
       ? latest.current.cutoff !== g.savedCutoff
@@ -89,6 +89,8 @@ export function AttentionDivider({
     const list = listRef.current
     const divider = dividerRef.current
     if (list === null || divider === null) return
+    event.preventDefault()
+    button.focus({ preventScroll: true })
     const scroller = list
     const reservedTrack = divider
     button.setPointerCapture(event.pointerId)
