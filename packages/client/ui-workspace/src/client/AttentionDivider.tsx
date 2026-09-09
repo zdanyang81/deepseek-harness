@@ -171,7 +171,6 @@ export function AttentionDivider({ rows, listRef, cutoff, preview, setPreview, c
       >
         <span aria-hidden="true">{preview !== null ? '↕' : '⋮⋮'}</span>
       </button>
-      <span className={css.caption} aria-hidden="true">{beyondPage ? '分界在更早历史 ↓' : '↑ 关注 · 可忽略 ↓'}</span>
     </div>
   )
 }

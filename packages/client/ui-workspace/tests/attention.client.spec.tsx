@@ -61,7 +61,7 @@ function mount(cutoff: AttentionBoundary = 200, more = false, initialRows = rows
   const button = screen.getByRole('button', { name: /关注分界线/ })
   const divider = button.closest<HTMLElement>('[data-attention-index]')!
   vi.spyOn(divider, 'getBoundingClientRect').mockImplementation(() => rect(100 + Number(divider.dataset.attentionIndex) * 32 - list.scrollTop))
-  vi.spyOn(button, 'getBoundingClientRect').mockImplementation(() => rect(divider.getBoundingClientRect().top + 4, 24))
+  vi.spyOn(button, 'getBoundingClientRect').mockImplementation(() => rect(divider.getBoundingClientRect().top + 6, 20))
   return { view, list, commit, button, divider, open, content, measureRows }
 }
 
@@ -348,6 +348,16 @@ describe('divider pointer ownership', () => {
     const b = mount(10, true)
     expect(b.button.title).toContain('更早历史')
     expect(b.button.closest('[data-attention-cutoff]')?.getAttribute('data-attention-cutoff')).toBe('10')
+  })
+  it('keeps accessible names without a visible attention label', () => {
+    const loaded = mount()
+    expect(loaded.button.getAttribute('aria-label')).toMatch(/^关注分界线/)
+    expect(screen.queryByText('↑ 关注 · 可忽略 ↓')).toBeNull()
+    expect(screen.queryByText('分界在更早历史 ↓')).toBeNull()
+    const paged = mount(10, true)
+    expect(paged.button.title).toContain('更早历史')
+    expect(screen.queryByText('分界在更早历史 ↓')).toBeNull()
+    expect(paged.button.textContent).toBe('⋮⋮')
   })
   it('supports explicit keyboard gap movement and suppresses handle clicks', () => {
     const b = mount()
