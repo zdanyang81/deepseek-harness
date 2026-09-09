@@ -557,6 +557,7 @@ function FlatList({
   const previousManualIds = useRef<readonly string[] | undefined>(undefined)
   const fallbackIndex = attentionIndex(recencyRows, cutoff)
   useEffect(() => {
+    if (list.phase !== 'ready') return
     const ids = manualRows.map(row => row.id as string)
     if (manualGap == null) {
       previousManualIds.current = ids
@@ -568,7 +569,7 @@ function FlatList({
       : nextAttentionManualGap(previousManualIds.current, ids, manualGap)
     previousManualIds.current = ids
     if (manualGap !== next) setManualGap(next)
-  }, [fallbackIndex, manualGap, manualRows, orderBy, setManualGap])
+  }, [fallbackIndex, list.phase, manualGap, manualRows, orderBy, setManualGap])
   const [preview, setPreview] = useState<AttentionBoundary | null>(null)
   const [countPreview, setCountPreview] = useState<number | null>(null)
   const resolvedGap = attentionManualGap(manualGap, fallbackIndex, rows.length)
