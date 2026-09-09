@@ -488,6 +488,11 @@ describe('WorkspaceBrowser', () => {
     })
     fireEvent.dragStart(two, { dataTransfer: dragData() })
     fireDrag(one, 'dragOver', 220)
+    fireEvent.dragEnd(two)
+    expect(b.store.getSnapshot().sessionOrderByAccount[FLAT_SESSION_ORDER_KEY]).toEqual(['two', 'three', 'one'])
+    expect(insertSessionBefore).not.toHaveBeenCalled()
+    fireEvent.dragStart(two, { dataTransfer: dragData() })
+    fireDrag(one, 'dragOver', 220)
     fireDrag(one, 'drop', 220)
     expect(insertSessionBefore).not.toHaveBeenCalled()
     expect(screen.getAllByRole('treeitem').map(row => row.textContent)).toEqual([

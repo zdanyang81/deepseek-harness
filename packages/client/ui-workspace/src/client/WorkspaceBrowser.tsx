@@ -638,8 +638,7 @@ function FlatList({
                   if (drag !== null) commitDrag(drag, { id: node.id, half })
                 },
                 end: () => {
-                  if (drag?.over !== null && drag?.over !== undefined) commitDrag(drag, drag.over)
-                  else setDrag(null)
+                  setDrag(null)
                   dropCommitted.current = false
                 },
               }}
