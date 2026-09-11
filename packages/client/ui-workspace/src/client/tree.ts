@@ -132,6 +132,13 @@ function sessionTitle(session: SessionSummary): string {
   return session.blank ? 'New Session' : session.displayTitle
 }
 
+/** First human prompt projected into the list, excluding textless prompts. */
+function firstPrompt(session: SessionSummary): string | undefined {
+  const metadata = session.projectionValues?.sessionListMetadata as { firstPrompt?: string | null } | undefined
+  const value = metadata?.firstPrompt
+  return value === undefined || value === null || value === '' ? undefined : value
+}
+
 /** Build one group without projecting session lineage into presentation. */
 function buildGroup(
   key: string,
@@ -217,10 +224,12 @@ function sessionNode(
   s: SessionSummary,
   descendants: ReadonlyMap<SessionId, SubagentDescendantSummary>,
 ): SessionNode {
+  const prompt = firstPrompt(s)
   return {
     id: s.id,
     title: sessionTitle(s),
     blank: s.blank,
+    ...(prompt === undefined ? {} : { firstPrompt: prompt }),
     running: s.running,
     runningSubagentCount: descendants.get(s.id)?.runningCount ?? 0,
     completed: s.completed === true,
