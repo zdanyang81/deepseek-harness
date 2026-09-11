@@ -134,7 +134,8 @@ function sessionTitle(session: SessionSummary): string {
 
 /** First human prompt projected into the list, excluding textless prompts. */
 function firstPrompt(session: SessionSummary): string | undefined {
-  const value = session.projectionValues?.sessionListMetadata?.firstPrompt
+  const metadata = session.projectionValues?.sessionListMetadata as { firstPrompt?: string | null } | undefined
+  const value = metadata?.firstPrompt
   return value === undefined || value === null || value === '' ? undefined : value
 }
 

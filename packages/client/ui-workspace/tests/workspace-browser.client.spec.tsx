@@ -25,7 +25,8 @@ const wid = (id: string) => id as WorkspaceId
 const summary = (id: string, updatedAt: number, overrides: Partial<SessionSummary> = {}): SessionSummary => ({
   id: sid(id), displayTitle: id, running: false, blank: false, updatedAt, ...overrides,
 })
-const sessionState = (items: readonly SessionSummary[], overrides: Partial<SessionListState> = {}): SessionListState => ({
+type PagedSessionListState = SessionListState & { hasMore?: boolean; loadingMore?: boolean }
+const sessionState = (items: readonly SessionSummary[], overrides: Partial<PagedSessionListState> = {}): PagedSessionListState => ({
   ids: items.map(item => item.id),
   byId: Object.fromEntries(items.map(item => [item.id, item])),
   current: undefined,
@@ -95,6 +96,7 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
     loadMoreSessions: vi.fn(async () => {}),
     searchSessions: vi.fn(async () => ({ items: [], hasMore: false })),
     searchResultLimit: 20,
+    loadFirstPrompt: vi.fn(async () => undefined),
     renameSession: vi.fn(async () => {}),
     forkSession: vi.fn(),
     renameWorkspace: vi.fn(async () => {}),
@@ -244,21 +246,21 @@ describe('WorkspaceBrowser', () => {
       (_, index) => summary(`hidden-${index + 1}`, count - index),
     ))
     const b = mount({
-      useSessions: hook(sessionState(pages[0], { hasMore: false, loadingMore: false })),
-      useWorkspaces: hook(workspaceState([], pages[0].map(item => item.id))),
+      useSessions: hook(sessionState(pages[0]!, { hasMore: false, loadingMore: false })),
+      useWorkspaces: hook(workspaceState([], pages[0]!.map(item => item.id))),
       loadMoreSessions,
     })
     const list = screen.getByRole('tree', { name: '会话' })
     setScrollMetrics(list, { clientHeight: 400, scrollHeight: 100, scrollTop: 0 })
     rerender(b, {
-      useSessions: hook(sessionState(pages[0], { hasMore: true, loadingMore: false })),
+      useSessions: hook(sessionState(pages[0]!, { hasMore: true, loadingMore: false })),
     })
 
     for (let page = 1; page <= 3; page += 1) {
       await waitFor(() => { expect(loadMoreSessions).toHaveBeenCalledTimes(page) })
       rerender(b, {
-        useSessions: hook(sessionState(pages[page], { hasMore: true, loadingMore: false })),
-        useWorkspaces: hook(workspaceState([], pages[page].map(item => item.id))),
+        useSessions: hook(sessionState(pages[page]!, { hasMore: true, loadingMore: false })),
+        useWorkspaces: hook(workspaceState([], pages[page]!.map(item => item.id))),
       })
       await act(async () => {
         requests[page - 1]?.resolve()

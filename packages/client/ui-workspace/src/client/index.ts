@@ -81,7 +81,12 @@ export function apply(ctx: ClientContext): void {
     },
     searchSessions,
     searchResultLimit: ctx.sessions.searchResultLimit,
-    loadFirstPrompt: sessionId => ctx.sessions.firstPrompt(sessionId),
+    loadFirstPrompt: (sessionId) => {
+      const sessions = ctx.sessions as typeof ctx.sessions & {
+        firstPrompt: (id: typeof sessionId) => Promise<string | undefined>
+      }
+      return sessions.firstPrompt(sessionId)
+    },
     renameSession: async (sessionId, title) => {
       // Row → session-face hop: rename is a per-session verb (ISession), not
       // a list-service verb; the binding resolves any listed session.
