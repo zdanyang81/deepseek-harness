@@ -546,11 +546,13 @@ describe('WorkspaceBrowser', () => {
     })
     fireEvent.dragStart(one, { dataTransfer: dragData() })
     fireDrag(two, 'drop', 180)
-    expect(b.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['two', 'one'])
+    await waitFor(() => {
+      expect(b.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['one', 'two'])
+    })
 
     fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
     fireEvent.click(screen.getByRole('menuitem', { name: '手动排序' }))
-    expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('two')
+    expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('one')
 
     // User activity updates the timestamp baseline in Manual mode without
     // changing the shared visual order.
@@ -559,10 +561,10 @@ describe('WorkspaceBrowser', () => {
     await waitFor(() => {
       expect(b.store.getSnapshot().sessionUpdatedAtByAccount.alpha).toEqual({ one: 4, two: 2 })
     })
-    expect(b.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['two', 'one'])
-    expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('two')
+    expect(b.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['one', 'two'])
+    expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('one')
 
-    // Entering Last updated performs one complete recency sort.
+    // Entering Last updated sorts the account by recency.
     fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
     fireEvent.click(screen.getByRole('menuitem', { name: '最近更新' }))
     await waitFor(() => {
@@ -570,7 +572,7 @@ describe('WorkspaceBrowser', () => {
       expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('one')
     })
 
-    // A later user activity timestamp promotes that Session once while the
+    // A later activity timestamp re-sorts that Session to the top while the
     // mode remains active.
     const promoted = sessionState([summary('one', 4), summary('two', 5)])
     rerender(b, { useSessions: hook(promoted) })
@@ -586,6 +588,47 @@ describe('WorkspaceBrowser', () => {
     })
     expect(restored.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['two', 'one'])
     expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('two')
+  })
+
+  it('places a later Session by recency while Last updated stays active', async () => {
+    const b = mount({
+      useSessions: hook(sessionState([summary('recent', 200), summary('older', 100)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['older', 'recent'])])),
+    })
+    act(() => { b.store.actions.setOrderBy('updated') })
+    fireEvent.click(screen.getByText('alpha'))
+    await waitFor(() => {
+      expect(b.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['recent', 'older'])
+    })
+
+    // A stored order that is already timestamped must still re-sort. This is
+    // the reload case where the newest Session was left below an older one.
+    act(() => {
+      b.store.actions.syncSessionOrderAccount('alpha', ['older', 'recent'], { older: 100, recent: 200 })
+    })
+    await waitFor(() => {
+      expect(b.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['recent', 'older'])
+    })
+
+    rerender(b, {
+      useSessions: hook(sessionState([
+        summary('recent', 200),
+        summary('older', 100),
+        summary('newest', 300),
+        summary('older-page', 50),
+      ])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['older', 'recent', 'older-page', 'newest'])])),
+    })
+    await waitFor(() => {
+      expect(b.store.getSnapshot().sessionOrderByAccount.alpha)
+        .toEqual(['newest', 'recent', 'older', 'older-page'])
+      expect(screen.getAllByRole('treeitem').slice(1).map(row => row.textContent)).toEqual([
+        expect.stringContaining('newest'),
+        expect.stringContaining('recent'),
+        expect.stringContaining('older'),
+        expect.stringContaining('older-page'),
+      ])
+    })
   })
 
   it('appends older Sessions discovered by pagination without promoting them', async () => {
@@ -1227,7 +1270,7 @@ describe('WorkspaceBrowser', () => {
     expect(insertSessionBefore).toHaveBeenCalledTimes(1)
   })
 
-  it('persists Ungrouped drag order in both modes without writing a Host Workspace account', async () => {
+  it('persists Ungrouped drag order only in Manual mode without writing a Host Workspace account', async () => {
     const insertSessionBefore = vi.fn(async () => {})
     const sessions = sessionState([summary('one', 3), summary('two', 2), summary('three', 1)])
     const b = mount({
@@ -1259,7 +1302,9 @@ describe('WorkspaceBrowser', () => {
       expect(b.store.getSnapshot().sessionOrderByAccount[UNGROUPED_KEY]).toEqual(['one', 'two', 'three'])
     })
     dragAfter('one', 'three')
-    expect(b.store.getSnapshot().sessionOrderByAccount[UNGROUPED_KEY]).toEqual(['two', 'three', 'one'])
+    await waitFor(() => {
+      expect(b.store.getSnapshot().sessionOrderByAccount[UNGROUPED_KEY]).toEqual(['one', 'two', 'three'])
+    })
     expect(insertSessionBefore).not.toHaveBeenCalled()
 
     b.view.unmount()
@@ -1268,12 +1313,14 @@ describe('WorkspaceBrowser', () => {
       useWorkspaces: hook(workspaceState([])),
       insertSessionBefore,
     })
-    expect(restored.store.getSnapshot().sessionOrderByAccount[UNGROUPED_KEY]).toEqual(['two', 'three', 'one'])
-    expect(screen.getAllByRole('treeitem').slice(1).map(row => row.textContent)).toEqual([
-      expect.stringContaining('two'),
-      expect.stringContaining('three'),
-      expect.stringContaining('one'),
-    ])
+    await waitFor(() => {
+      expect(restored.store.getSnapshot().sessionOrderByAccount[UNGROUPED_KEY]).toEqual(['one', 'two', 'three'])
+      expect(screen.getAllByRole('treeitem').slice(1).map(row => row.textContent)).toEqual([
+        expect.stringContaining('one'),
+        expect.stringContaining('two'),
+        expect.stringContaining('three'),
+      ])
+    })
   })
 
   it('still sends the reorder when the dragged row left the group mid-drag', () => {

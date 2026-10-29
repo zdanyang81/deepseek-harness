@@ -217,33 +217,24 @@ function compareSessionRecency(a: SessionId, b: SessionId, byId: SessionListStat
   return a < b ? -1 : 1
 }
 
-/** Reconcile one editable order account and apply its activity-promotion policy. */
+/**
+ * Reconcile one editable order account.
+ * Last updated is a full recency order on every pass, so a newly seen Session
+ * and a Session whose timestamp was already stored both land by `updatedAt`.
+ * Manual keeps the stored order and only appends Sessions the account has not
+ * seen yet.
+ */
 function nextSessionOrderAccount({
-  sessionIds, previousOrder, previousUpdatedAt, list, orderBy, sortByRecency,
+  sessionIds, previousOrder, previousUpdatedAt, list, orderBy,
 }: {
   sessionIds: readonly SessionId[]
   previousOrder: readonly string[] | undefined
   previousUpdatedAt: Readonly<Record<string, number>>
   list: SessionListState
   orderBy: SessionOrderBy
-  sortByRecency: boolean
 }): { order: SessionId[]; updatedAt: Record<string, number>; changed: boolean } {
-  let order = reconciledSessionOrder(sessionIds, previousOrder)
-  if (sortByRecency) {
-    order.sort((a, b) => compareSessionRecency(a, b, list.byId))
-  } else if (orderBy === 'updated') {
-    const promoted = sessionIds
-      .filter((id) => {
-        const session = list.byId[id]
-        return session !== undefined
-          && (previousUpdatedAt[id] !== undefined && session.updatedAt > previousUpdatedAt[id])
-      })
-      .sort((a, b) => compareSessionRecency(a, b, list.byId))
-    if (promoted.length > 0) {
-      const promotedIds = new Set(promoted)
-      order = [...promoted, ...order.filter(id => !promotedIds.has(id))]
-    }
-  }
+  const order = reconciledSessionOrder(sessionIds, previousOrder)
+  if (orderBy === 'updated') order.sort((a, b) => compareSessionRecency(a, b, list.byId))
   const updatedAt: Record<string, number> = {}
   for (const id of sessionIds) {
     const session = list.byId[id]
@@ -377,7 +368,6 @@ function SessionTree({
   const sessionDropCommitted = useRef(false)
   const [workspaceDrag, setWorkspaceDrag] = useState<WorkspaceDragState | null>(null)
   const workspaceDropCommitted = useRef(false)
-  const previousOrderBy = useRef(orderBy)
   const nativeDragActive = drag !== null || workspaceDrag !== null
   useNativeDragAcceptance(nativeDragActive)
   const currentGroup = current === undefined
@@ -398,8 +388,6 @@ function SessionTree({
   }, [list, workspaces])
   useEffect(() => {
     if (list.phase !== 'ready') return
-    const switchedToUpdated = previousOrderBy.current !== 'updated' && orderBy === 'updated'
-    previousOrderBy.current = orderBy
     const accounts = [
       ...workspaces.map(workspace => ({
         key: workspace.workspaceId as string,
@@ -416,7 +404,6 @@ function SessionTree({
         previousUpdatedAt,
         list,
         orderBy,
-        sortByRecency: orderBy === 'updated' && (previousOrder === undefined || switchedToUpdated),
       })
       if (next.changed) {
         syncSessionOrderAccount(key, next.order.map(id => id as string), next.updatedAt)
@@ -704,20 +691,16 @@ function FlatList({
     [list, archivedSessionIds],
   )
   const sessionIds = useMemo(() => baseRows.map(row => row.id), [baseRows])
-  const previousOrderBy = useRef(orderBy)
   useEffect(() => {
     if (list.phase !== 'ready') return
     const previousOrder = sessionOrderByAccount[FLAT_SESSION_ORDER_KEY]
     const previousUpdatedAt = sessionUpdatedAtByAccount[FLAT_SESSION_ORDER_KEY] ?? {}
-    const switchedToUpdated = previousOrderBy.current !== 'updated' && orderBy === 'updated'
-    previousOrderBy.current = orderBy
     const next = nextSessionOrderAccount({
       sessionIds,
       previousOrder,
       previousUpdatedAt,
       list,
       orderBy,
-      sortByRecency: orderBy === 'updated' && (previousOrder === undefined || switchedToUpdated),
     })
     if (next.changed) {
       syncSessionOrderAccount(FLAT_SESSION_ORDER_KEY, next.order.map(id => id as string), next.updatedAt)
