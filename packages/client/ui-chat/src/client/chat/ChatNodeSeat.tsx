@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo } from 'react'
 import { JsonBlock } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConversationLocationDataStore, ConversationTurnDataMap } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ChatNodeOwnerProps, ChatViewSlotProps } from '../contract/slots.ts'
@@ -18,6 +18,8 @@ interface ChatNodeSeatProps extends ChatNodeOwnerProps {
   readonly actions: ChatViewSlotProps['actions']
   readonly renderSlot: ChatViewSlotProps['renderSlot']
   readonly t: ChatViewSlotProps['t']
+  /** Registers the rendered row wrapper for render skipping; returns its disposer. */
+  readonly observeRow: (row: HTMLElement) => () => void
 }
 
 type RoutedChatNodeOwner = {
@@ -38,7 +40,7 @@ function turnOf(node: ChatNode | undefined): number | undefined {
 export const ChatNodeSeat = memo(function ChatNodeSeat({
   nodeKey, useChatNode, useChatNodeProcess, historyIncomplete, compactTranscript,
   selectedCallId, cwd, openFile, inspectCall, forkAt,
-  loadImage, renderMessageImages, fileMentions, useStore, actions, renderSlot, t,
+  loadImage, renderMessageImages, fileMentions, useStore, actions, renderSlot, t, observeRow,
 }: ChatNodeSeatProps) {
   const node = useChatNode(nodeKey)
   const routedNode = node as ChatNode | undefined
@@ -100,6 +102,11 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
     if (processMember) setOpen(true)
   }, [processMember, setOpen])
   const wrapperRef = useSearchableHidden(processHidden, revealProcess)
+  const rendered = routedNode !== undefined
+  useLayoutEffect(() => {
+    const row = wrapperRef.current
+    return rendered && row !== null ? observeRow(row) : undefined
+  }, [observeRow, rendered, wrapperRef])
   const owner = useMemo<ChatNodeOwnerProps | null>(() => node === undefined
     ? null
     : {

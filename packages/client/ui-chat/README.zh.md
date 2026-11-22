@@ -48,6 +48,8 @@ Chat 会为每个非空的初始或恢复请求、显式消息序列起点或真
 
 Chat 会在历史前插与 renderer 重新挂载时恢复语义锚点。读者跟随底部时，`ResizeObserver` 追随新的底部，并且无需读取行几何就选中最后一个已加载 Turn；读者离开底部后，高度变化会保持顶部位置，再由阅读线几何选择活跃 Turn。轮次导航预览位于 Markdown 代码块粘性头栏上方，而导航外框始终处于 composer 上方的 transcript 区域内（[已加载 Turn 导航](../../../.agents/notes/implemented/feature/2026-08-25-loaded-turn-chat-navigation.zh.md)）。
 
+所有已加载行都保持挂载。距离视口超过两个滚动区高度的行会获得 `content-visibility: auto`，并固定为上次测得的尺寸，浏览器因此跳过它们的样式、布局和绘制，而滚动高度、语义锚点、浏览器查找和 `hidden="until-found"` 展开都不变；视口附近的行从不带 containment，因此其中未经 portal 渲染的 fixed 浮层不会被裁剪（[跳过渲染决策](../../../.agents/notes/implemented/architecture/2026-11-22-chat-rows-skip-rendering-instead-of-unmounting.zh.md)）。
+
 -----
 
 <a id="model-experience"></a>

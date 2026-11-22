@@ -11,6 +11,7 @@ import type { ChatViewSlotProps } from '../contract/slots.ts'
 import type { ChatSnapshot } from '../contract/snapshot.ts'
 import { PendingSteeringBubble, PendingSubmissionBubble } from './MessageItem.tsx'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
+import { OffscreenRows } from './offscreen-rows.ts'
 import { TurnNavigator } from './TurnNavigator.tsx'
 import { mergeTurnRailItems, type TurnRailItem } from './turn-rail-items.ts'
 import { formatRunDuration } from './message-chrome.ts'
@@ -304,6 +305,7 @@ export function ChatView({
 
   const listRef = useRef<HTMLDivElement | null>(null)
   const columnRef = useRef<HTMLDivElement | null>(null)
+  const [offscreenRows] = useState(() => new OffscreenRows())
   // A saved position starts disarmed; the first layout effect synchronously
   // restores it and normalizes a floor-clamped position back to following.
   const [atBottom, setAtBottom] = useState(() => chatScroll.read() === null)
@@ -642,6 +644,13 @@ export function ChatView({
     return () => { observer.disconnect() }
   }, [])
 
+  useEffect(() => {
+    const local = listRef.current
+    /* v8 ignore next -- ref-null guard: the list element renders unconditionally. */
+    if (local === null) return
+    return offscreenRows.attach(scrollerOf(local))
+  }, [offscreenRows])
+
   // A failed/empty page leaves the head unchanged. Once the request leaves
   // its busy state there is no future prepend for the saved anchor to own.
   useEffect(() => {
@@ -792,6 +801,7 @@ export function ChatView({
             fileMentions={fileMentions}
             renderSlot={renderSlot}
             t={t}
+            observeRow={offscreenRows.observe}
           />
           {/* No pending placeholders: questions (ui-user-questions) and approvals
               (ApprovalPanel) both take over the composer, so a flow card would

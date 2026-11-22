@@ -48,6 +48,8 @@ Settings → General exposes a persisted `Normal` / `Compact` conversation-displ
 
 Chat restores semantic anchors across history prepend and renderer remounts. While the reader is pinned to the floor, `ResizeObserver` follows the new floor and selects the latest loaded Turn without reading row geometry. Once the reader moves away, flow-height changes preserve the top position and the reading-line geometry selects the active Turn. Turn-rail previews paint above sticky Markdown code-block banners, while the rail frame remains inside the transcript band above the composer ([loaded-Turn navigation](../../../.agents/notes/implemented/feature/2026-08-25-loaded-turn-chat-navigation.md)).
 
+Every loaded row stays mounted. Rows more than two scrollport heights away receive `content-visibility: auto` pinned to their last measured size, so the browser skips their style, layout, and paint while scroll height, semantic anchors, browser find, and `hidden="until-found"` reveal stay unchanged; rows near the viewport never carry containment, so non-portaled fixed popovers inside them are not clipped ([render-skipping decision](../../../.agents/notes/implemented/architecture/2026-11-22-chat-rows-skip-rendering-instead-of-unmounting.md)).
+
 -----
 
 <a id="model-experience"></a>
