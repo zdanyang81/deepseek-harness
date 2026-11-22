@@ -43,6 +43,8 @@ Client journal 在发布 follow 快照、live entry 或历史页之前验证当�
 
 `events` 从一个持久切点读取一页时间正序的记录，返回记录、`hasMore` 和包含末项的 `cursor`；省略 `throughSeq` 时选取观察到的日志末尾，兼容的 `page` 方法提供同样的读取，但入口已弃用。`events`、`observeEvent` 和 `follow` 接收 Address，投影和状态操作接收 Session ID。分页读取与 Follow 开场会校验传入的 Address。纯 `observeEvent` 和 `observeProjections` 订阅既不获取 Observation，也不确认实体存在：其 `ready` 帧不携带快照游标。
 
+冷的普通 Session 在 follow 时先以首屏分页作为充分性判定调用 `observeSessionTail`；已存后缀覆盖首屏时，首屏快照由该后缀及其恢复出的 projection 值构建。请求激活时，全量观察在首屏发出之前启动，并与全量观察首屏完全一样地激活已准备的 Session；被激活的 Session 创建后，监听器会补发后缀游标之后提交的事件。全量观察的游标低于后缀游标时，follow 在首屏之后以 `gateway/internal` 失败。后缀无法覆盖首屏（消息不足、某个消息分组跨到后缀起点之前、header 属于 subagent 或没有工作区、缺少 projection）或后缀读取失败时，首屏改用全量观察，由它报告权威错误。
+
 列表行在状态可用时携带 `formatStatus`，Client 无需请求其投影即可识别需要迁移的 Session。
 
 Host 仅在配置的工作时间片耗尽时，于完整条目之间让出事件循环；剩余工作较少时直接返回，不强制让出。每行及每次让出之后检查请求取消，取消时拒绝返回部分结果。每行同步计算；列表不承诺跨 Session 的统一快照。已经进入冷态队列的 Session 若在让出期间接入，仍返回缓存行：Client 对进行中请求的变更重放会纠正其可用性，带序号的投影会覆盖缓存提示。已接入 Session 的摘要通过[`sessionQuery.getListMetadata`](../../session-query/session-query/README.zh.md#session-list-metadata)读取是否为空和最后一次提示词的最近活动时间，其投影提示携带通过 `snapshot` 计算的每个摘要 key。已接入 Session 的首次摘要在其完整内存日志上计算这些投影，之后的摘要增量推进；这次计算在单行的同步工作内进行，`listWorkSliceMs` 无法切分它。

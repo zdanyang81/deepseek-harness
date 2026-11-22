@@ -137,17 +137,52 @@ export function paginate(
   turnWindow?: SessionPageRequest['turnWindow'],
 ): { readonly events: SessionEvent[]; readonly hasMore: boolean } {
   const end = SessionLogOffset(Math.min(throughSeq + 1, beforeSeq ?? throughSeq + 1))
+  const cut = pageCut(events, SessionLogOffset(0), end, maxMessages, turnWindow) as SessionLogOffsetType
+  return { events: events.slice(cut, end), hasMore: cut > 0 }
+}
+
+/**
+ * Cut the newest message-aligned page from a contiguous suffix that ends at the log end.
+ * @param events - contiguous events whose first element sits at its own seq.
+ * @param maxMessages - message budget.
+ * @param turnWindow - optional turn-boundary stop rule.
+ * @returns the same page {@link paginate} cuts from the whole log, or
+ *   `undefined` when that cut lies below the suffix.
+ */
+export function paginateSuffix(
+  events: readonly SessionEvent[],
+  maxMessages: number,
+  turnWindow?: SessionPageRequest['turnWindow'],
+): { readonly events: SessionEvent[]; readonly hasMore: boolean } | undefined {
+  const base = SessionLogOffset(events[0]?.seq ?? 0)
+  const cut = pageCut(events, base, SessionLogOffset(base + events.length), maxMessages, turnWindow)
+  if (cut === undefined) return undefined
+  return { events: events.slice(cut - base), hasMore: cut > 0 }
+}
+
+/**
+ * Find the first seq of the message-aligned page ending before `end`.
+ * @param events - contiguous events whose first element has seq `base`.
+ * @param base - seq of `events[0]`.
+ * @param end - exclusive page end seq.
+ * @param maxMessages - message budget.
+ * @param turnWindow - optional turn-boundary stop rule.
+ * @returns the cut seq, or `undefined` when it lies below `base`.
+ */
+function pageCut(
+  events: readonly SessionEvent[],
+  base: SessionLogOffsetType,
+  end: SessionLogOffsetType,
+  maxMessages: number,
+  turnWindow: SessionPageRequest['turnWindow'],
+): SessionLogOffsetType | undefined {
   let count = 0
   let turns = 0
-  let cut = SessionLogOffset(0)
-  for (let index = end - 1; index >= 0; index--) {
-    const event = events[index] as SessionEvent
+  for (let index = end - 1; index >= base; index--) {
+    const event = events[index - base] as SessionEvent
     if (turnWindow !== undefined && event.type === 'turn/start') {
       turns++
-      if (count >= turnWindow.minMessages && turns >= turnWindow.minTurns) {
-        cut = SessionLogOffset(index)
-        break
-      }
+      if (count >= turnWindow.minMessages && turns >= turnWindow.minTurns) return SessionLogOffset(index)
     }
     if (!MESSAGE_TYPES.has(event.type) || !isAppendSurfaceEvent(event)) continue
     count++
@@ -158,12 +193,9 @@ export function paginate(
         if (source < groupStart) groupStart = source
       }
     }
-    if (count >= maxMessages) {
-      cut = SessionLogOffset(groupStart)
-      break
-    }
+    if (count >= maxMessages) return groupStart < base ? undefined : SessionLogOffset(groupStart)
   }
-  return { events: events.slice(cut, end), hasMore: cut > 0 }
+  return base === 0 ? SessionLogOffset(0) : undefined
 }
 
 /**
