@@ -1301,6 +1301,12 @@ describe('session-query exact reads', () => {
     expect(observed.header.id).toBe(live.id)
   })
 
+  it('leaves a live Session out of observeSessionTail', async () => {
+    const ctx = await liveContext()
+    const live = ctx.sessions.create(brandString<SessionId>('observe-tail-live'))
+
+    await expect(ctx.sessionQuery.observeSessionTail(live.id, { sufficient: () => true })).resolves.toBeUndefined()
+  })
   it('leaves the optional persistence dependency optional', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

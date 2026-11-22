@@ -53,6 +53,8 @@ import {
   SessionObservationReader,
   type SessionObservation,
   type SessionObservationOptions,
+  type SessionTailObservation,
+  type SessionTailObservationOptions,
 } from './observation.ts'
 import { buildSessionEventSearchDocuments } from './documents.ts'
 import {
@@ -84,7 +86,12 @@ export {
   materializeSessionResultFilters,
 } from './filters.ts'
 export { assertSessionHeadersCompatible } from './sources.ts'
-export type { SessionObservation, SessionObservationOptions } from './observation.ts'
+export type {
+  SessionObservation,
+  SessionObservationOptions,
+  SessionTailObservation,
+  SessionTailObservationOptions,
+} from './observation.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -161,6 +168,20 @@ export abstract class SessionQueryEngine extends Service {
     options: SessionObservationOptions = {},
   ): Promise<SessionObservation> {
     return this._observations.read(sessionId, options)
+  }
+
+  /**
+   * Read a display-only cold suffix with exact projections, without restoring
+   * the Session or decoding its whole log.
+   * @param sessionId - logical Session identity.
+   * @param options - the caller's sufficiency predicate and cancellation.
+   * @returns the suffix, or `undefined` when only {@link observeSession} can serve this Session.
+   */
+  observeSessionTail(
+    sessionId: SessionId,
+    options: SessionTailObservationOptions,
+  ): Promise<SessionTailObservation | undefined> {
+    return this._observations.readTail(sessionId, options)
   }
 
   /**
