@@ -3623,6 +3623,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'options', description: 'optional cancellation.' }],
         returns: 'one snapshot per stored session.',
       },
+      {
+        signature: 'readTail?(id: SessionId, options: SessionPersistenceTailOptions): Promise<SessionTailRead | undefined>',
+        description: 'Optional suffix read for display-only consumers that need the newest events without decoding the whole log. Returned events pass the same per-event validation as a full read, but the backend does not inspect the committed region before the suffix, so a full read can still reject a log whose suffix read succeeded. Backends omit the method when they have no cheaper suffix access than a full read.',
+        parameters: [{ name: 'id', description: 'the stored session to read.' }, { name: 'options', description: 'the sufficiency predicate and optional cancellation.' }],
+        returns: 'the suffix, or `undefined` when this artifact cannot be served by a suffix read (absent, not yet materialized, needing a format migration, forked, or torn); callers then use a full read.',
+      },
     ],
   },
   {
@@ -3641,6 +3647,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Read only a predecessor checkpoint\'s title as a zero-I/O listing hint.\n\nThe authoritative Session header supplies the lifecycle identity. A cache checkpoint can lag that log but cannot lead it because writes flush the log first, so a matching predecessor title is a genuine (possibly stale) fact from this Session. The registry still requires the current title projection\'s row version and schema. No other predecessor projection is exposed: format normalization can change their current meaning, and the cachedSnapshot / hydration paths continue to reject them.',
         parameters: [{ name: 'meta', description: 'authoritative listed Session header.' }],
         returns: 'a title-only block at the stored title row\'s watermark, or `undefined` when the record is current, newer, unrelated, missing, or incompatible with the title unit.',
+      },
+      {
+        signature: 'suffixFloor(meta: SessionHeader, inheritedEventCount: SessionLogOffset): SessionLogOffset | undefined',
+        description: 'The lowest stored seq a restoreSuffix read must start at for this Session lifecycle: the registry\'s `restoreFloor` over the cached rows.',
+        parameters: [{ name: 'meta', description: 'authoritative stored Session header.' }, { name: 'inheritedEventCount', description: 'exact inherited cut completing the lifecycle identity.' }],
+        returns: 'the floor, or `undefined` when no identity-matching record exists or no unit is registered.',
+      },
+      {
+        signature: 'restoreSuffix( meta: SessionHeader, inheritedEventCount: SessionLogOffset, events: readonly SessionEvent[], baseSeq: SessionLogOffset, ): ProjectionSnapshot | undefined',
+        description: 'Restore every projection at the end of a stored log suffix by folding the suffix over the cached rows, without a prepared Session or a full log. Writes no checkpoint.',
+        parameters: [{ name: 'meta', description: 'authoritative stored Session header.' }, { name: 'inheritedEventCount', description: 'exact inherited cut completing the lifecycle identity.' }, { name: 'events', description: 'contiguous stored events starting at `baseSeq` and ending at the log end.' }, { name: 'baseSeq', description: 'seq of the first supplied event; at most {@link suffixFloor}.' }],
+        returns: 'all projection values at the suffix end, or `undefined` when no identity-matching record exists or a row cannot seed this suffix.',
       },
       {
         signature: 'hydratePrepared( session: Session, events: readonly SessionEvent[], ): ProjectionSnapshot',
@@ -3751,6 +3769,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Observe one exact live or prepared Session without a persistence listing preflight.',
         parameters: [{ name: 'sessionId', description: 'logical Session identity.' }, { name: 'options', description: 'cancellation and projection selection for this read.' }],
         returns: 'a caller-owned observation lease.',
+      },
+      {
+        signature: 'observeSessionTail( sessionId: SessionId, options: SessionTailObservationOptions, ): Promise<SessionTailObservation | undefined>',
+        description: 'Read a display-only cold suffix with exact projections, without restoring the Session or decoding its whole log.',
+        parameters: [{ name: 'sessionId', description: 'logical Session identity.' }, { name: 'options', description: 'the caller\'s sufficiency predicate and cancellation.' }],
+        returns: 'the suffix, or `undefined` when only {@link observeSession} can serve this Session.',
       },
       {
         signature: 'abstract searchSessions( request: SessionSearchRequest, exec?: SessionSearchExecContext, ): Promise<SessionSearchPage<SessionSearchHit>>',
@@ -10155,6 +10179,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionPersistenceStatOptions {\n    readonly signal?: AbortSignal;\n}',
   },
   {
+    name: 'SessionPersistenceTailOptions',
+    declaration: 'export interface SessionPersistenceTailOptions {\n    readonly signal?: AbortSignal;\n    readonly sufficient: (events: readonly SessionEvent[]) => boolean;\n}',
+  },
+  {
     name: 'SessionProjectionBaseline',
     declaration: 'export interface SessionProjectionBaseline {\n    readonly asOfSeq: number;\n    readonly values: SessionProjectionValues;\n}',
   },
@@ -10353,6 +10381,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionSurfaceSnapshot',
     declaration: 'export interface SessionSurfaceSnapshot {\n    session: SessionHeader;\n    inheritedEventCount: SessionLogOffset;\n    capturedThroughSeq: OptionalSessionSeq;\n    events: SurfaceEvent[];\n}',
+  },
+  {
+    name: 'SessionTailObservation',
+    declaration: 'export interface SessionTailObservation {\n    readonly header: SessionHeader;\n    readonly inheritedEventCount: SessionLogOffsetType;\n    readonly events: readonly SessionEvent[];\n    readonly cursor: SessionSeqCursor;\n    readonly revision: SessionPersistenceRevision;\n    readonly projections?: ProjectionSnapshot;\n}',
+  },
+  {
+    name: 'SessionTailObservationOptions',
+    declaration: 'export interface SessionTailObservationOptions {\n    readonly signal?: AbortSignal;\n    readonly sufficient: (events: readonly SessionEvent[]) => boolean;\n}',
+  },
+  {
+    name: 'SessionTailRead',
+    declaration: 'export interface SessionTailRead extends SessionStorageMetadata {\n    readonly revision: SessionPersistenceRevision;\n    readonly events: readonly SessionEvent[];\n}',
   },
   {
     name: 'SessionTelemetryRecord',

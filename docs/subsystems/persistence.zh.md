@@ -461,6 +461,21 @@ abstract stat(id: SessionId, options?: SessionPersistenceStatOptions): Promise<S
  * @returns one snapshot per stored session.
  */
 abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+/**
+ * Optional suffix read for display-only consumers that need the newest
+ * events without decoding the whole log. Returned events pass the same
+ * per-event validation as a full read, but the backend does not inspect the
+ * committed region before the suffix, so a full read can still reject a log
+ * whose suffix read succeeded. Backends omit the method when they have no
+ * cheaper suffix access than a full read.
+ * @param id - the stored session to read.
+ * @param options - the sufficiency predicate and optional cancellation.
+ * @returns the suffix, or `undefined` when this artifact cannot be served
+ *   by a suffix read (absent, not yet materialized, needing a format
+ *   migration, forked, or torn); callers then use a full read.
+ */
+readTail?(id: SessionId, options: SessionPersistenceTailOptions): Promise<SessionTailRead | undefined>
 ```
 
 Types: [SessionId](core.zh.md)
