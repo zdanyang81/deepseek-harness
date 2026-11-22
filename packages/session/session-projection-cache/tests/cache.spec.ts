@@ -848,6 +848,28 @@ describe('SessionProjectionCache cold-read seeding', () => {
     })
   })
 
+  it('restores every projection from a stored suffix at or below the cached floor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-projcache-'))
+    roots.push(root)
+    await seedRecord(root, 'suffix', {
+      'cache-test/marks': { ver: 1, seq: SessionSeq(2), val: { marks: ['cached'] } },
+    })
+    const { cache } = await harness({ root })
+    const meta = headerOf(brandString<SessionId>('suffix'))
+    const absent = headerOf(brandString<SessionId>('suffix-absent'))
+    const events = storedLog([['a'], ['b'], ['c']])
+
+    expect(cache.suffixFloor(meta, SessionLogOffset(0))).toBe(2)
+    expect(cache.suffixFloor(absent, SessionLogOffset(0))).toBeUndefined()
+    expect(cache.restoreSuffix(meta, SessionLogOffset(0), events.slice(2), SessionLogOffset(2))).toEqual({
+      asOfSeq: 4,
+      values: { 'cache-test/marks': { marks: ['c'] } },
+    })
+    // A suffix starting above the row's watermark cannot seed the fold.
+    expect(cache.restoreSuffix(meta, SessionLogOffset(0), events.slice(4), SessionLogOffset(4))).toBeUndefined()
+    expect(cache.restoreSuffix(absent, SessionLogOffset(0), events, SessionLogOffset(0))).toBeUndefined()
+  })
+
   it('coldSnapshot traverses the full log but applies only the events after each cached watermark', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-projcache-'))
     roots.push(root)
