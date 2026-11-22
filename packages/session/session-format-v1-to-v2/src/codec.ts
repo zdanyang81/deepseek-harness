@@ -129,6 +129,18 @@ function createDecoder(
   }
 }
 
+/**
+ * Decode one released v2 physical row without the decoder's cross-row seq
+ * density and inherited-marker state, for readers that start mid-log.
+ * @param value - JSON-parsed physical row.
+ * @param rowIndex - physical row number used in diagnostics.
+ * @returns the logical event with expanded `sourceEventSeqs`.
+ * @throws SessionFormatError when the row is malformed.
+ */
+export function decodeReleasedV2Row(value: unknown, rowIndex: number): SessionFormatEvent {
+  return decodeEvent(value, rowIndex)
+}
+
 function decodeEvent(value: unknown, rowIndex: number): SessionFormatEvent {
   const record = jsonRecord(value as SessionFormatJsonValue, `released v2 row ${rowIndex}`)
   const missing = EVENT_REQUIRED.find(key => !Object.hasOwn(record, key))

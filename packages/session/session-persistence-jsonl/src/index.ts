@@ -30,6 +30,7 @@ import {
   type SessionLocation, type SessionPersistenceCreateOptions,
   type SessionPersistenceListOptions, type SessionPersistenceOpenOptions,
   type SessionPersistenceSnapshot, type SessionPersistenceStatOptions,
+  type SessionPersistenceTailOptions, type SessionTailRead,
   type SessionPersistenceRevision as PersistenceRevision,
 } from '@deepseek-ai/dsh-session-persistence'
 import { JsonlBackendTracker, JsonlSessionHandle, type StorageHandleState } from './storage.ts'
@@ -39,11 +40,13 @@ import { SESSION_FORMAT_VERSION, SessionLogOffset } from '@deepseek-ai/dsh-sessi
 import type { SessionEvent, SessionId, SessionHeader, SessionLogOffset as SessionLogOffsetType } from '@deepseek-ai/dsh-session'
 import {
   assertNoRetiredHeaderFields, encodeSegment, eventLines, generationLogFilename, generationLogPath, logPath, logSuffix,
-  parseGenerationLogFilename, projectDir, scanLog, sessionDir, SessionLogScanner, toHeaderLine,
+  parseEventRecords, parseGenerationLogFilename, parseHeaderRecordMeta, projectDir, scanLog, sessionDir,
+  SessionLogScanner, toHeaderLine,
   type JsonlCompression,
 } from './format.ts'
 import {
   compressZstdFrame, createZstdFrameDecoder, decompressZstdFrame, decompressZstdPrefix, scanZstdFrames,
+  type ZstdFrameRange,
 } from './zstd.ts'
 import { ensureDurableDirectoryWin32, publishNewFileWin32 } from './win32.ts'
 import { verifyCurrentGenerationInWorker } from './migration-verifier.ts'
@@ -225,6 +228,24 @@ function fileRevision(identity: JsonlPhysicalIdentity): PersistenceRevision {
     identity.mtimeNs,
     identity.ctimeNs,
   ].join(':'))
+}
+
+/**
+ * Serve a suffix of an already validated full log, doubling its length until
+ * the caller's predicate accepts it.
+ * @param events - the memoized complete log.
+ * @param sufficient - the caller's sufficiency predicate.
+ * @returns the shortest doubling suffix the predicate accepts, or the whole log.
+ */
+function widenMemoizedSuffix(
+  events: readonly SessionEvent[],
+  sufficient: SessionPersistenceTailOptions['sufficient'],
+): readonly SessionEvent[] {
+  for (let length = 1; length < events.length; length *= 2) {
+    const suffix = events.slice(events.length - length)
+    if (sufficient(suffix)) return suffix
+  }
+  return events
 }
 
 /**
@@ -642,6 +663,51 @@ export class JsonlSessionPersistence extends SessionPersistence {
     }
     signal?.throwIfAborted()
     return snapshots
+  }
+
+  /**
+   * Read the newest complete frames of a current-format Zstandard log,
+   * widening backward by doubling the frame count until the caller's
+   * predicate accepts the suffix; see the seam contract. A memoized full read
+   * at the same revision serves the suffix without decoding.
+   * @param id - the stored session to read.
+   * @param options - the sufficiency predicate and optional cancellation.
+   * @returns the validated suffix, or `undefined` when this artifact needs a full read.
+   */
+  override async readTail(id: SessionId, options: SessionPersistenceTailOptions): Promise<SessionTailRead | undefined> {
+    const { signal, sufficient } = options
+    signal?.throwIfAborted()
+    if (this.compression !== 'zstd') return undefined
+    await this.ensureRootEncoding()
+    await this.tracker.closeCompletion(id)
+    signal?.throwIfAborted()
+    if (this.tracker.hasPending(id)) return undefined
+    const selected = await this.findLog(id, signal)
+    if (selected === undefined || selected.sourceVersion !== SESSION_FORMAT_VERSION) return undefined
+    const stable = await readStableJsonlFile(selected.sourcePath, signal)
+    const revision = fileRevision(stable.identity)
+    const memoized = this.coldLogMemo.get(id)
+    if (memoized?.status === 'current' && memoized.revision === revision) {
+      if (memoized.tornTruncateTo !== undefined || memoized.meta.isSeeded) return undefined
+      return {
+        meta: memoized.meta,
+        inheritedEventCount: memoized.inheritedEventCount,
+        revision,
+        events: widenMemoizedSuffix(memoized.events, sufficient),
+      }
+    }
+    const decoded = this.decodeZstdTail(stable.bytes, sufficient, signal)
+    if (decoded === undefined) return undefined
+    await this.assertStoredIdentity(selected.sourcePath, SESSION_FORMAT_VERSION, decoded.meta, id, signal)
+    signal?.throwIfAborted()
+    assertStoredId(id, decoded.meta)
+    if (decoded.meta.isSeeded) return undefined
+    return {
+      meta: decoded.meta,
+      inheritedEventCount: SessionLogOffset(0),
+      revision,
+      events: validateStoredEvents(decoded.meta, decoded.events, this.locate(decoded.meta)),
+    }
   }
 
   // --- handle-facing storage internals (package-private via the handle class below) ---
@@ -1071,6 +1137,63 @@ export class JsonlSessionPersistence extends SessionPersistence {
     // the session directory — the last moment the directory can be absent.
     await this.rejectOppositeArtifact(header.cwd, header.id)
     return this.acquireLease(header.id, header.cwd)
+  }
+
+  /**
+   * Decode the header frame and a backward-widening run of the newest event
+   * frames. Structural damage, a torn final frame, or a suffix that is not a
+   * contiguous seq run yields `undefined` so the full read owns the diagnosis.
+   */
+  private decodeZstdTail(
+    buffer: Buffer,
+    sufficient: SessionPersistenceTailOptions['sufficient'],
+    signal: AbortSignal | undefined,
+  ): { meta: SessionHeader; events: SessionEvent[] } | undefined {
+    // Each decoder instance decodes one frame run; every widening step opens its own.
+    const decodeRun = <T>(range: readonly ZstdFrameRange[], parse: (plaintext: Buffer) => T[]): T[] => {
+      const decoder = createZstdFrameDecoder()
+      try {
+        const parsed: T[] = []
+        for (const plaintext of decoder.decode(buffer, range)) {
+          for (const value of parse(plaintext)) parsed.push(value)
+        }
+        return parsed
+      } finally {
+        decoder.close()
+      }
+    }
+    try {
+      const { frames, tornStart } = scanZstdFrames(buffer)
+      if (tornStart !== undefined || frames.length === 0) return undefined
+      const [meta] = decodeRun(frames.slice(0, 1), (plaintext) => {
+        assertZstdHeaderFrame(plaintext)
+        return [parseHeaderRecordMeta(plaintext)]
+      })
+      /* v8 ignore next -- decoding one complete frame yields it or throws. */
+      if (meta === undefined) return undefined
+      let events: SessionEvent[] = []
+      let start = frames.length
+      let width = 1
+      while (start > 1) {
+        signal?.throwIfAborted()
+        const from = Math.max(1, start - width)
+        events = decodeRun(frames.slice(from, start), parseEventRecords).concat(events)
+        start = from
+        width *= 2
+        if (events.length > 0 && sufficient(events)) break
+      }
+      const base = events[0]?.seq ?? 0
+      if (start === 1 && base !== 0) return undefined
+      for (const [index, event] of events.entries()) {
+        if (event.seq !== base + index) return undefined
+      }
+      return { meta, events }
+    } catch {
+      signal?.throwIfAborted()
+      // Frame, checksum, header, and row damage: the full read rejects the
+      // same artifact with the classified error and its artifact path.
+      return undefined
+    }
   }
 
   /** Decode complete frames and retain complete JSONL records from a torn final frame. */

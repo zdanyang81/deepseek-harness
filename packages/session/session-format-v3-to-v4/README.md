@@ -75,7 +75,7 @@ This edge changes only the named representations below, closes evidenced interru
 |---|---|---|
 | Logical V3 header | `version: 3` becomes `4` | Released V3 header validation runs first; all other logical header fields remain unchanged. |
 | V3 physical rows | Released V3 source codec decodes events and compact runs | Source framing and source-event range decoding remain owned by the preceding package. |
-| V4 physical rows | `releasedV4SessionFormatCodec` reuses released V2 framing with native V4 admission | No V4 event is projected into a V3 semantic validator. Encoding and decoding do not run this incoming migration. |
+| V4 physical rows | `releasedV4SessionFormatCodec` reuses released V2 framing with native V4 admission | No V4 event is projected into a V3 semantic validator. Encoding and decoding do not run this incoming migration. `decodeReleasedV4Row` applies the same admission and framing to one row without cross-row state, for readers that start mid-log. |
 
 No preset id, PTC dispatch event tag, file attachment, or physical filename is renamed by this edge. Content extensions in embedded streams follow the rules below; stream order and indices remain unchanged.
 

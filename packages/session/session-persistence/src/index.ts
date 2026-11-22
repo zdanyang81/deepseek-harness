@@ -131,6 +131,28 @@ export interface SessionPersistenceListOptions {
   readonly signal?: AbortSignal
 }
 
+/** Options for {@link SessionPersistence.readTail}. */
+export interface SessionPersistenceTailOptions {
+  /** Optional cancellation for backend read work. */
+  readonly signal?: AbortSignal
+  /**
+   * Decide whether a candidate suffix is long enough. The backend calls it
+   * with successively longer contiguous suffixes, oldest event first, and
+   * stops widening at the first `true` or at seq 0.
+   * @param events - unvalidated contiguous suffix ending at the last stored event.
+   * @returns whether the suffix suffices.
+   */
+  readonly sufficient: (events: readonly SessionEvent[]) => boolean
+}
+
+/** A validated contiguous suffix of one stored log, with its storage metadata. */
+export interface SessionTailRead extends SessionStorageMetadata {
+  /** Revision of the physical artifact the suffix was read from; see {@link SessionPersistence.stat}. */
+  readonly revision: SessionPersistenceRevision
+  /** Validated events ending at the last stored event; starts at seq 0 when the whole log was needed. */
+  readonly events: readonly SessionEvent[]
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     sessionPersistence: SessionPersistence
@@ -231,6 +253,21 @@ export abstract class SessionPersistence extends Service {
    * @returns one snapshot per stored session.
    */
   abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+  /**
+   * Optional suffix read for display-only consumers that need the newest
+   * events without decoding the whole log. Returned events pass the same
+   * per-event validation as a full read, but the backend does not inspect the
+   * committed region before the suffix, so a full read can still reject a log
+   * whose suffix read succeeded. Backends omit the method when they have no
+   * cheaper suffix access than a full read.
+   * @param id - the stored session to read.
+   * @param options - the sufficiency predicate and optional cancellation.
+   * @returns the suffix, or `undefined` when this artifact cannot be served
+   *   by a suffix read (absent, not yet materialized, needing a format
+   *   migration, forked, or torn); callers then use a full read.
+   */
+  readTail?(id: SessionId, options: SessionPersistenceTailOptions): Promise<SessionTailRead | undefined>
 }
 
 export default SessionPersistence

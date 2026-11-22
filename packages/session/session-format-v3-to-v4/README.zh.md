@@ -75,7 +75,7 @@ const artifact = restore.finish()
 |---|---|---|
 | 逻辑 V3 header | `version: 3` 变为 `4` | 先执行已发布 V3 header 校验；其他逻辑 header 字段均不变。 |
 | V3 物理行 | 已发布 V3 源 codec 解码事件与紧凑 run | 源分帧和源事件区间解码仍归前一个包所有。 |
-| V4 物理行 | `releasedV4SessionFormatCodec` 复用已发布 V2 分帧并执行原生 V4 接纳 | 不把 V4 事件投影到 V3 语义校验器。编码和解码不运行此入边迁移。 |
+| V4 物理行 | `releasedV4SessionFormatCodec` 复用已发布 V2 分帧并执行原生 V4 接纳 | 不把 V4 事件投影到 V3 语义校验器。编码和解码不运行此入边迁移。 `decodeReleasedV4Row` 对单行执行相同的接纳与分帧，不带跨行状态，供从日志中段开始读取的读者使用。 |
 
 本边不重命名 preset id、PTC dispatch 事件标签、文件附件或物理文件名。内嵌流中的内容扩展遵循下列规则，流顺序和索引保持不变。
 
