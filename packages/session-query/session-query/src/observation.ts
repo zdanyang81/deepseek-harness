@@ -214,10 +214,11 @@ export class SessionObservationReader {
     const snapshot = await this.statSource(persistence, sessionId, signal)
     if (snapshot.header.isSeeded) return undefined
     if (this.cachedEntry(persistence, sessionId, snapshot.revision) !== undefined) return undefined
-    let floor: SessionLogOffsetType = SessionLogOffset(0)
+    let floor = Number.POSITIVE_INFINITY
     if (registry !== undefined && cache !== undefined) {
       const cachedFloor = cache.suffixFloor(snapshot.header, SessionLogOffset(0))
-      if (cachedFloor === undefined) return undefined
+      // A floor at the log start decodes the whole log only to read it again.
+      if (cachedFloor === undefined || cachedFloor === 0) return undefined
       floor = cachedFloor
     }
 

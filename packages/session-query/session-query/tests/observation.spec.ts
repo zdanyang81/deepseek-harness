@@ -741,3 +741,258 @@ describe('SessionObservationReader cold projections', () => {
     await ctx.fiber.dispose()
   })
 })
+
+describe('SessionObservationReader in-flight cold loads', () => {
+  it('shares one log read between concurrent readers of the same revision', async () => {
+    const ctx = await readerContext()
+    const meta = header('shared-load')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'shared')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    ctx.provide('sessionPersistence', stubPersistence(store, counters))
+    const reader = new SessionObservationReader(ctx)
+
+    const [first, second] = await Promise.all([
+      reader.read(meta.id, { projectionMode: 'none' }),
+      reader.read(meta.id, { projectionMode: 'none' }),
+    ])
+
+    expect(counters.read).toBe(1)
+    expect(second.events).toBe(first.events)
+    first[Symbol.dispose]()
+    second[Symbol.dispose]()
+    await ctx.fiber.dispose()
+  })
+
+  it('lets a waiting reader retry on its own after the shared load fails', async () => {
+    const ctx = await readerContext()
+    const meta = header('shared-failure')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'retried')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    const hooks: { readFailure?: unknown } = { readFailure: new Error('disk failed') }
+    ctx.provide('sessionPersistence', stubPersistence(store, counters, {
+      get readFailure() { return hooks.readFailure },
+      onRead: () => { if (counters.read === 1) queueMicrotask(() => { delete hooks.readFailure }) },
+    }))
+    const reader = new SessionObservationReader(ctx)
+
+    const [first, second] = await Promise.allSettled([
+      reader.read(meta.id, { projectionMode: 'none' }),
+      reader.read(meta.id, { projectionMode: 'none' }),
+    ])
+
+    expect(first.status).toBe('rejected')
+    expect(second.status).toBe('fulfilled')
+    expect(counters.read).toBe(2)
+    if (second.status === 'fulfilled') second.value[Symbol.dispose]()
+    await ctx.fiber.dispose()
+  })
+
+  it('keeps a newer revision load registered when an older load settles', async () => {
+    const ctx = await readerContext()
+    const meta = header('superseded-load')
+    const entry = { header: meta, events: [messageEvent(0, 'old')], revision: 'r1' }
+    const store = new Map([[meta.id, entry]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    const releases: (() => void)[] = []
+    const persistence = stubPersistence(store, counters)
+    const open = persistence.open.bind(persistence)
+    persistence.open = async (...args: Parameters<typeof open>) => {
+      await new Promise<void>((resolve) => { releases.push(resolve) })
+      return open(...args)
+    }
+    ctx.provide('sessionPersistence', persistence)
+    const reader = new SessionObservationReader(ctx)
+
+    const older = reader.read(meta.id, { projectionMode: 'none' })
+    await vi.waitFor(() => { expect(releases).toHaveLength(1) })
+    entry.revision = 'r2'
+    entry.events = [messageEvent(0, 'new')]
+    const newer = reader.read(meta.id, { projectionMode: 'none' })
+    await vi.waitFor(() => { expect(releases).toHaveLength(2) })
+    releases[0]?.()
+    using olderObserved = await older
+    const joined = reader.read(meta.id, { projectionMode: 'none' })
+    releases[1]?.()
+    using newerObserved = await newer
+    using joinedObserved = await joined
+
+    expect(olderObserved.revision).toBe(SessionPersistenceRevision('r1'))
+    expect(newerObserved.revision).toBe(SessionPersistenceRevision('r2'))
+    expect(joinedObserved.events).toBe(newerObserved.events)
+    expect(counters.read).toBe(2)
+    await ctx.fiber.dispose()
+  })
+})
+
+/** Add a doubling `readTail` over the stub store to an object-stub persistence. */
+function withTail(
+  persistence: SessionPersistence,
+  store: Map<SessionIdType, StoredEntry>,
+  hooks: { readonly onTail?: () => void; readonly result?: 'none'; readonly failure?: unknown } = {},
+): SessionPersistence {
+  persistence.readTail = (id, options) => {
+    hooks.onTail?.()
+    // oxlint-disable-next-line typescript/prefer-promise-reject-errors
+    if (hooks.failure !== undefined) return Promise.reject(hooks.failure)
+    const entry = store.get(id)
+    if (entry === undefined || hooks.result === 'none') return Promise.resolve(undefined)
+    let suffix = entry.events
+    for (let length = 1; length < entry.events.length; length *= 2) {
+      const candidate = entry.events.slice(entry.events.length - length)
+      if (options.sufficient(candidate)) {
+        suffix = candidate
+        break
+      }
+    }
+    return Promise.resolve({
+      meta: structuredClone(entry.header),
+      inheritedEventCount: SessionLogOffset(0),
+      revision: SessionPersistenceRevision(entry.revision),
+      events: structuredClone(suffix),
+    })
+  }
+  return persistence
+}
+
+/** Eight events over two completed turns: the newest turn starts at seq 4. */
+function twoTurnLog(): SessionEvent[] {
+  return [
+    { type: 'turn/start', seq: SessionSeq(0), time: 1, data: { turn: 1 } },
+    messageEvent(1, 'one'),
+    messageEvent(2, 'two'),
+    { type: 'turn/end', seq: SessionSeq(3), time: 4, data: { turn: 1, reason: { kind: 'completed' } } },
+    { type: 'turn/start', seq: SessionSeq(4), time: 5, data: { turn: 2 } },
+    messageEvent(5, 'three'),
+    messageEvent(6, 'four'),
+    { type: 'turn/end', seq: SessionSeq(7), time: 8, data: { turn: 2, reason: { kind: 'completed' } } },
+  ]
+}
+
+describe('SessionObservationReader cold suffix', () => {
+  it('serves the shortest suffix that reaches a turn boundary and the caller predicate', async () => {
+    const ctx = await readerContext()
+    const meta = header('tail-plain')
+    const store = new Map([[meta.id, { header: meta, events: twoTurnLog(), revision: 'r1' }]])
+    ctx.provide('sessionPersistence', withTail(stubPersistence(store, { stat: 0, open: 0, read: 0 }), store))
+    const offered: number[] = []
+
+    const tail = await new SessionObservationReader(ctx).readTail(meta.id, {
+      sufficient: (events) => {
+        offered.push(events.length)
+        return events.length >= 2
+      },
+    })
+
+    // Length 1 holds a turn/end boundary, so the caller sees it and asks for more.
+    expect(offered).toEqual([1, 2])
+    expect(tail).toMatchObject({ header: meta, inheritedEventCount: 0, cursor: 7, revision: 'r1' })
+    expect(tail?.events.map(event => event.seq)).toEqual([6, 7])
+    expect(tail?.projections).toBeUndefined()
+    await ctx.fiber.dispose()
+  })
+
+  it('restores suffix projections from the cache floor', async () => {
+    const ctx = await readerContext()
+    await ctx.plugin(SessionProjectionRegistry)
+    const meta = header('tail-projected')
+    const store = new Map([[meta.id, { header: meta, events: twoTurnLog(), revision: 'r1' }]])
+    ctx.provide('sessionPersistence', withTail(stubPersistence(store, { stat: 0, open: 0, read: 0 }), store))
+    const snapshot = { asOfSeq: 7, values: {} }
+    const restoreSuffix = vi.fn().mockReturnValue(snapshot)
+    ctx.provide('sessionProjectionCache', { suffixFloor: () => SessionLogOffset(4), restoreSuffix } as never)
+
+    const tail = await new SessionObservationReader(ctx).readTail(meta.id, { sufficient: () => true })
+
+    // Widening stops at the first suffix reaching the cached floor.
+    expect(tail?.events.map(event => event.seq)).toEqual([4, 5, 6, 7])
+    expect(tail?.projections).toBe(snapshot)
+    expect(restoreSuffix).toHaveBeenCalledWith(meta, 0, tail?.events, 4)
+    await ctx.fiber.dispose()
+  })
+
+  it('leaves the Session to a full read when the suffix cannot be exact or useful', async () => {
+    const ctx = await readerContext()
+    const plain = header('tail-plain-missing')
+    const seeded = { ...header('tail-seeded'), isSeeded: true, parentSession: SessionId('tail-parent') }
+    const interrupted = header('tail-interrupted')
+    const empty = header('tail-empty')
+    const store = new Map([
+      [plain.id, { header: plain, events: twoTurnLog(), revision: 'r1' }],
+      [seeded.id, { header: seeded, events: twoTurnLog(), revision: 'r1' }],
+      [interrupted.id, { header: interrupted, events: twoTurnLog().slice(0, 6), revision: 'r1' }],
+      [empty.id, { header: empty, events: [], revision: 'r1' }],
+    ])
+    const persistence = stubPersistence(store, { stat: 0, open: 0, read: 0 })
+    ctx.provide('sessionPersistence', persistence)
+    const reader = new SessionObservationReader(ctx)
+    const read = (id: SessionIdType) => reader.readTail(id, { sufficient: () => true })
+
+    // A backend without suffix reads.
+    await expect(read(plain.id)).resolves.toBeUndefined()
+    withTail(persistence, store)
+    await expect(read(seeded.id)).resolves.toBeUndefined()
+    await expect(read(interrupted.id)).resolves.toBeUndefined()
+    await expect(read(empty.id)).resolves.toMatchObject({ events: [], cursor: -1 })
+    // An already prepared revision serves the full observation directly.
+    using prepared = await reader.read(plain.id, { projectionMode: 'none' })
+    expect(prepared.source).toBe('prepared')
+    await expect(read(plain.id)).resolves.toBeUndefined()
+    // A live Session never takes the cold suffix path.
+    const live = ctx.sessions.create(SessionId('tail-live'))
+    await expect(read(live.id)).resolves.toBeUndefined()
+    await ctx.fiber.dispose()
+  })
+
+  it('needs a projection cache whose floor and rows can seed the suffix', async () => {
+    const ctx = await readerContext()
+    await ctx.plugin(SessionProjectionRegistry)
+    const meta = header('tail-cache')
+    const store = new Map([[meta.id, { header: meta, events: twoTurnLog(), revision: 'r1' }]])
+    ctx.provide('sessionPersistence', withTail(stubPersistence(store, { stat: 0, open: 0, read: 0 }), store))
+    const reader = new SessionObservationReader(ctx)
+    const read = () => reader.readTail(meta.id, { sufficient: () => true })
+
+    await expect(read()).resolves.toBeUndefined()
+    const cache = { suffixFloor: vi.fn(), restoreSuffix: vi.fn() }
+    const dispose = ctx.provide('sessionProjectionCache', cache as never)
+    cache.suffixFloor.mockReturnValue(undefined)
+    await expect(read()).resolves.toBeUndefined()
+    cache.suffixFloor.mockReturnValue(SessionLogOffset(0))
+    await expect(read()).resolves.toBeUndefined()
+    cache.suffixFloor.mockReturnValue(SessionLogOffset(6))
+    cache.restoreSuffix.mockReturnValue(undefined)
+    await expect(read()).resolves.toBeUndefined()
+    expect(cache.restoreSuffix).toHaveBeenCalledOnce()
+    dispose()
+    await ctx.fiber.dispose()
+  })
+
+  it('reports backend fallbacks, failures, cancellation, and a live owner appearing mid-read', async () => {
+    const ctx = await readerContext()
+    const meta = header('tail-outcomes')
+    const store = new Map([[meta.id, { header: meta, events: twoTurnLog(), revision: 'r1' }]])
+    const persistence = stubPersistence(store, { stat: 0, open: 0, read: 0 })
+    ctx.provide('sessionPersistence', persistence)
+    const reader = new SessionObservationReader(ctx)
+    const read = (signal?: AbortSignal) => reader.readTail(meta.id, {
+      ...signal === undefined ? {} : { signal },
+      sufficient: () => true,
+    })
+
+    withTail(persistence, store, { result: 'none' })
+    await expect(read()).resolves.toBeUndefined()
+    withTail(persistence, store, { failure: new SessionPersistenceCorruptionError('damaged frame', { cause: new Error('checksum') }) })
+    await expect(read()).rejects.toMatchObject({ code: 'SESSION_QUERY_CORRUPT_SESSION' })
+    const abort = new AbortController()
+    withTail(persistence, store, {
+      onTail: () => { abort.abort() },
+      failure: new Error('cancelled read'),
+    })
+    await expect(read(abort.signal)).rejects.toMatchObject({ code: 'SESSION_QUERY_ABORTED' })
+    withTail(persistence, store, { onTail: () => { ctx.sessions.create(meta.id) } })
+    await expect(read()).resolves.toBeUndefined()
+    await expect(reader.readTail(SessionId('tail-cancelled'), { signal: AbortSignal.abort(), sufficient: () => true }))
+      .rejects.toMatchObject({ code: 'SESSION_QUERY_ABORTED' })
+    await ctx.fiber.dispose()
+  })
+})

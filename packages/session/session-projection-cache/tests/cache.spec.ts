@@ -697,6 +697,28 @@ describe('SessionProjectionCache cold-read seeding', () => {
     })
   })
 
+  it('restores every projection from a stored suffix at or below the cached floor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-projcache-'))
+    roots.push(root)
+    await seedRecord(root, 'suffix', {
+      'cache-test/marks': { ver: 1, seq: SessionSeq(2), val: { marks: ['cached'] } },
+    })
+    const { cache } = await harness({ root })
+    const meta = headerOf(SessionId('suffix'))
+    const events = storedLog([['a'], ['b'], ['c']])
+
+    expect(cache.suffixFloor(meta, SessionLogOffset(0))).toBe(2)
+    expect(cache.suffixFloor(headerOf(SessionId('suffix-absent')), SessionLogOffset(0))).toBeUndefined()
+    expect(cache.restoreSuffix(meta, SessionLogOffset(0), events.slice(2), SessionLogOffset(2))).toEqual({
+      asOfSeq: 4,
+      values: { 'cache-test/marks': { marks: ['c'] } },
+    })
+    // A suffix starting above the row's watermark cannot seed the fold.
+    expect(cache.restoreSuffix(meta, SessionLogOffset(0), events.slice(4), SessionLogOffset(4))).toBeUndefined()
+    expect(cache.restoreSuffix(headerOf(SessionId('suffix-absent')), SessionLogOffset(0), events, SessionLogOffset(0)))
+      .toBeUndefined()
+  })
+
   it('coldSnapshot write-back is fail-soft: a failed durable write logs and never throws', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-projcache-'))
     roots.push(root)

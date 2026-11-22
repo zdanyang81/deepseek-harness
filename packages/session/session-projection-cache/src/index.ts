@@ -205,12 +205,13 @@ export class SessionProjectionCache extends Service {
    * Session lifecycle: the registry's `restoreFloor` over the cached rows.
    * @param meta - authoritative stored Session header.
    * @param inheritedEventCount - exact inherited cut completing the lifecycle identity.
-   * @returns the floor, or `undefined` when no identity-matching record exists.
+   * @returns the floor, or `undefined` when no identity-matching record exists
+   *   or no unit is registered.
    */
   suffixFloor(meta: SessionHeader, inheritedEventCount: SessionLogOffset): SessionLogOffset | undefined {
     const record = this.recordFor(meta.id, identityOf(meta, inheritedEventCount))
     if (record === undefined) return undefined
-    return this.ctx.sessionProjections.restoreFloor(record.rows) ?? SessionLogOffset(0)
+    return this.ctx.sessionProjections.restoreFloor(record.rows)
   }
 
   /**

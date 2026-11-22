@@ -42,6 +42,7 @@ import {
 } from './format.ts'
 import {
   compressZstdFrame, createZstdFrameDecoder, decompressZstdFrame, decompressZstdPrefix, scanZstdFrames,
+  type ZstdFrameRange,
 } from './zstd.ts'
 import { ensureDurableDirectoryWin32, publishNewFileWin32 } from './win32.ts'
 import {
@@ -419,14 +420,7 @@ class JsonlSessionPersistence extends SessionPersistence {
     if (this.tracker.hasPending(id)) return undefined
     const selected = await this.findLog(id, signal)
     if (selected === undefined || selected.sourceVersion !== SESSION_FORMAT_VERSION) return undefined
-    let stable: Awaited<ReturnType<typeof readStableJsonlFile>>
-    try {
-      stable = await readStableJsonlFile(selected.sourcePath, signal)
-    } catch (error: unknown) {
-      signal?.throwIfAborted()
-      if (isENOENT(error)) return undefined
-      throw error
-    }
+    const stable = await readStableJsonlFile(selected.sourcePath, signal)
     const revision = fileRevision(stable.identity)
     const memoized = this.coldLogMemo.get(id)
     if (memoized !== undefined && memoized.revision === revision) {
@@ -723,15 +717,26 @@ class JsonlSessionPersistence extends SessionPersistence {
     sufficient: SessionPersistenceTailOptions['sufficient'],
     signal: AbortSignal | undefined,
   ): { meta: SessionHeader; events: SessionEvent[] } | undefined {
-    const decoder = createZstdFrameDecoder()
+    // Each decoder instance decodes one frame run; every widening step opens its own.
+    const decodeRun = <T>(range: readonly ZstdFrameRange[], parse: (plaintext: Buffer) => T[]): T[] => {
+      const decoder = createZstdFrameDecoder()
+      try {
+        const parsed: T[] = []
+        for (const plaintext of decoder.decode(buffer, range)) {
+          for (const value of parse(plaintext)) parsed.push(value)
+        }
+        return parsed
+      } finally {
+        decoder.close()
+      }
+    }
     try {
       const { frames, tornStart } = scanZstdFrames(buffer)
       if (tornStart !== undefined || frames.length === 0) return undefined
-      let meta: SessionHeader | undefined
-      for (const plaintext of decoder.decode(buffer, frames.slice(0, 1))) {
+      const [meta] = decodeRun(frames.slice(0, 1), (plaintext) => {
         assertZstdHeaderFrame(plaintext)
-        meta = parseHeaderRecordMeta(plaintext)
-      }
+        return [parseHeaderRecordMeta(plaintext)]
+      })
       /* v8 ignore next -- decoding one complete frame yields it or throws. */
       if (meta === undefined) return undefined
       let events: SessionEvent[] = []
@@ -740,11 +745,7 @@ class JsonlSessionPersistence extends SessionPersistence {
       while (start > 1) {
         signal?.throwIfAborted()
         const from = Math.max(1, start - width)
-        const widened: SessionEvent[] = []
-        for (const plaintext of decoder.decode(buffer, frames.slice(from, start))) {
-          for (const event of parseEventRecords(plaintext)) widened.push(event)
-        }
-        events = widened.concat(events)
+        events = decodeRun(frames.slice(from, start), parseEventRecords).concat(events)
         start = from
         width *= 2
         if (events.length > 0 && sufficient(events)) break
@@ -760,8 +761,6 @@ class JsonlSessionPersistence extends SessionPersistence {
       // Frame, checksum, header, and record damage: the full read rejects the
       // same artifact with the classified error and its artifact path.
       return undefined
-    } finally {
-      decoder.close()
     }
   }
 

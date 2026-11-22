@@ -245,10 +245,10 @@ export class SessionHistoryController {
         }
         nextOffset = SessionLogOffset(tail.cursor + 1)
         // Events committed between the suffix read and this full observation
-        // reach the Client in order before any buffered live event.
-        for (const event of events.slice(nextOffset)) {
-          yield entryFor(event)
-          nextOffset = SessionLogOffset(nextOffset + 1)
+        // precede every buffered live event; the loop drops duplicates.
+        const gap = events.slice(nextOffset)
+        for (let index = gap.length - 1; index >= 0; index -= 1) {
+          buffered.pushFront({ type: 'event', event: gap[index] as SessionEvent })
         }
       }
       if (address.kind === 'session' && source.source === 'prepared') {
