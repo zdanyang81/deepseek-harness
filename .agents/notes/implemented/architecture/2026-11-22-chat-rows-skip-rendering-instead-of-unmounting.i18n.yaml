@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-22-chat-rows-skip-rendering-instead-of-unmounting.md
+2026-11-22-chat-rows-skip-rendering-instead-of-unmounting.md: d0464fc04b5bcd3dc3b322a10e41b24777405290
+2026-11-22-chat-rows-skip-rendering-instead-of-unmounting.zh.md: 331f4549133031ecd4516f89053562ac4b9676c9
