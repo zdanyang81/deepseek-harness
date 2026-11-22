@@ -24,7 +24,9 @@ import { parseSessionFormatLogFilename, sessionFormatLogFilename, SessionFormatU
 import type { SessionFormatEvent } from '@deepseek-ai/dsh-session-format'
 import type { SessionFormatRecovery, SessionFormatRestore } from '@deepseek-ai/dsh-session-format'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
-import { assertV4RowAdmission, assertReleasedV4Relationships } from '@deepseek-ai/dsh-session-format-v3-to-v4'
+import {
+  assertReleasedV4Relationships, assertV4RowAdmission, decodeReleasedV4Row,
+} from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import {
   SessionFormatUnsupportedError,
   sessionFormatVersionRefusal,
@@ -375,6 +377,44 @@ function parseHeaderRecord(record: Buffer): { readonly meta: SessionHeader; read
     throw new Error('corrupt session log: first line is not a session header')
   }
   return { meta: fromHeaderLine(parsed).meta, restore }
+}
+
+/**
+ * Parse one complete header record without reading any event row.
+ * @param record - the complete first JSONL record, including its newline.
+ * @returns the stored header.
+ * @throws when the record is not exactly one valid current header line.
+ */
+export function parseHeaderRecordMeta(record: Buffer): SessionHeader {
+  return parseHeaderRecord(record).meta
+}
+
+/**
+ * Decode a buffer holding only complete current-format event rows, as one
+ * durable batch frame does, with the same per-row admission as
+ * {@link SessionLogScanner}. Sequence density and cross-event relationships
+ * are not checked.
+ * @param plaintext - newline-terminated event rows.
+ * @returns the decoded events in row order.
+ * @throws when the buffer ends inside a row or a row does not decode.
+ */
+export function parseEventRecords(plaintext: Buffer): SessionEvent[] {
+  if (plaintext.length > 0 && plaintext.at(-1) !== 0x0A) {
+    throw new Error('session log frame ends inside a record')
+  }
+  const events: SessionEvent[] = []
+  let lineStart = 0
+  for (
+    let newline = plaintext.indexOf(0x0A);
+    newline !== -1;
+    newline = plaintext.indexOf(0x0A, lineStart)
+  ) {
+    const decoded: unknown = JSON.parse(plaintext.subarray(lineStart, newline).toString('utf8'))
+    assertV4RowAdmission(decoded, KNOWN_SESSION_EVENT_TYPES)
+    events.push(decodeReleasedV4Row(decoded, events.length) as unknown as SessionEvent)
+    lineStart = newline + 1
+  }
+  return events
 }
 
 /**

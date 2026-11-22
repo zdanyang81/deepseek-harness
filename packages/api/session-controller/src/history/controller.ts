@@ -231,7 +231,7 @@ export function history(observation: SessionObservation, request: Omit<SessionPa
  * @param observation - projected read cut owned by the caller.
  * @returns the exact baseline; missing projection support fails explicitly.
  */
-export function projections(observation: SessionObservation): SessionProjectionBaseline {
+export function projections(observation: Pick<SessionObservation, 'projections'>): SessionProjectionBaseline {
   const snapshot = observation.projections
   if (snapshot === undefined) throw new RemoteError('session/projections-unavailable', 'Session projections are unavailable', {})
   return { asOfSeq: snapshot.asOfSeq, values: snapshot.values as SessionProjectionValues }

@@ -114,7 +114,9 @@ kind: "package-reference"
 
 ### 观察缓存
 
-`observeSession` 不经过列表预检直接构建定点观察。实时观察以当前日志长度固定 cut，并在首次读取时才物化 `events`，因此只需要 header、cursor 或 projection 的消费者永远不会复制日志；日志只会追加，所以延后的首次读取得到的仍然正好是该前缀。冷路径先对存储会话执行 `stat`，再查询自有的有界缓存，缓存键为持久化实例加 `stat` 修订：修订未变则复用已恢复的未发布 Session，不再重读日志；修订变化或持久化实例被替换则经句柄 seam 重新加载并替换条目。缓存保留 `preparedSessionCacheSize` 个条目并按最久未用淘汰，被活跃观察租约钉住的条目从不被淘汰；读取中途转为实时的会话会重试实时路径。
+`observeSession` 不经过列表预检直接构建定点观察。实时观察以当前日志长度固定 cut，并在首次读取时才物化 `events`，因此只需要 header、cursor 或 projection 的消费者永远不会复制日志；日志只会追加，所以延后的首次读取得到的仍然正好是该前缀。冷路径先对存储会话执行 `stat`，再查询自有的有界缓存，缓存键为持久化实例加 `stat` 修订：修订未变则复用已恢复的未发布 Session，不再重读日志；修订变化或持久化实例被替换则经句柄 seam 重新加载并替换条目。缓存保留 `preparedSessionCacheSize` 个条目并按最久未用淘汰，被活跃观察租约钉住的条目从不被淘汰；读取中途转为实时的会话会重试实时路径。 同一持久化实例、同一 revision 的并发冷读取共享一次进行中的加载；等待者在其结束后从头重新观察，因此加载失败只会让发起加载的那次读取失败。
+
+`observeSessionTail(sessionId, { sufficient })` 是只读展示的冷后缀读取。它要求后缀到达 projection 缓存的 `suffixFloor`、包含回合边界并满足调用方的判定，然后通过 `restoreSuffix` 计算后缀末尾精确的 projection 值。对于在线 Session、当前 revision 已准备好的 Session、fork 出的 Session、需要补中断回合收尾事件的日志、下限位于日志起点的情况，或持久化与 projection 缓存无法提供后缀时，它返回 `undefined`，调用方改用 `observeSession`。
 
 冷 `SessionObservation` 通过 `persistedEventCount` 区分 `events` 中已存储的前缀与内存中补出的中断轮次修复事件。fork 调用方将这些修复事件保留在孩子的后缀中。实时观察不带该字段，因为实时 log 没有读取时补出的修复。
 

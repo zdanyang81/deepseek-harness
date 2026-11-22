@@ -288,6 +288,29 @@ cachedSnapshot( meta: SessionHeader, keys?: ProjectionKeySelection, ): Projectio
 cachedPredecessorTitle(meta: SessionHeader): ProjectionSnapshot | undefined
 
 /**
+ * The lowest stored seq a {@link restoreSuffix} read must start at for this
+ * Session lifecycle: the registry's `restoreFloor` over the cached rows.
+ * @param meta - authoritative stored Session header.
+ * @param inheritedEventCount - exact inherited cut completing the lifecycle identity.
+ * @returns the floor, or `undefined` when no identity-matching record exists
+ *   or no unit is registered.
+ */
+suffixFloor(meta: SessionHeader, inheritedEventCount: SessionLogOffset): SessionLogOffset | undefined
+
+/**
+ * Restore every projection at the end of a stored log suffix by folding the
+ * suffix over the cached rows, without a prepared Session or a full log.
+ * Writes no checkpoint.
+ * @param meta - authoritative stored Session header.
+ * @param inheritedEventCount - exact inherited cut completing the lifecycle identity.
+ * @param events - contiguous stored events starting at `baseSeq` and ending at the log end.
+ * @param baseSeq - seq of the first supplied event; at most {@link suffixFloor}.
+ * @returns all projection values at the suffix end, or `undefined` when no
+ *   identity-matching record exists or a row cannot seed this suffix.
+ */
+restoreSuffix( meta: SessionHeader, inheritedEventCount: SessionLogOffset, events: readonly SessionEvent[], baseSeq: SessionLogOffset, ): ProjectionSnapshot | undefined
+
+/**
  * Hydrate projection cells for an already-prepared Session without another
  * persistence read. The cache seeds matching rows; the supplied exact log
  * advances every unit to the observation cut. No checkpoint is written

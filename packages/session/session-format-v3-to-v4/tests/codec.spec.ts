@@ -3,7 +3,9 @@ import { SessionFormatEventCollector } from '@deepseek-ai/dsh-session-format'
 import type { SessionFormatEvent, SessionFormatJsonObject } from '@deepseek-ai/dsh-session-format'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { releasedV2SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v2-to-v3'
-import { assertReleasedV4Header, assertV4RowAdmission, releasedV4SessionFormatCodec, restoreReleasedV4Artifact } from '../src/index.ts'
+import {
+  assertReleasedV4Header, assertV4RowAdmission, decodeReleasedV4Row, releasedV4SessionFormatCodec, restoreReleasedV4Artifact,
+} from '../src/index.ts'
 
 const header = { version: 4, id: 'parent', createdAt: 1, isSeeded: false, delegationDepth: 0 }
 const fact: SessionFormatEvent = { type: 'feedback/record', seq: 0, time: 1, data: { text: 'retained' } }
@@ -33,6 +35,15 @@ describe('V4 framing and restoration', () => {
     expect(output.values).toEqual([fact])
     const artifact = { header, events: output.values, inheritedEventCount: 0 }
     expect(restoreReleasedV4Artifact(artifact, types)).toBe(artifact)
+  })
+
+  it('decodes a mid-log row exactly as the stateful decoder does, without seq density', () => {
+    const later: SessionFormatEvent = { type: 'feedback/record', seq: 7, time: 8, data: { text: 'later' }, sourceEventSeqs: [2, 3, 4, 6] }
+    const row = releasedV4SessionFormatCodec.encodeEvent(later)
+    expect(row['sourceEventSeqs']).toEqual([[2, 4], 6])
+    expect(decodeReleasedV4Row(row, 0)).toEqual(later)
+    expect(() => decodeReleasedV4Row({ ...row, extra: true }, 3)).toThrow('row 3 has unexpected field extra')
+    expect(() => decodeReleasedV4Row({ type: 'tool/result', seq: 1, time: 1, data: {} }, 0)).toThrow()
   })
 
   it('rejects mismatched versions and malformed logical and physical metadata', () => {

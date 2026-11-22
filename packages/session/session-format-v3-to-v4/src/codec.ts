@@ -2,7 +2,7 @@
 
 import { SessionFormatError, isSessionFormatJsonObject } from '@deepseek-ai/dsh-session-format'
 import type { SessionFormatCodec, SessionFormatCurrentEncoder, SessionFormatHeader, SessionFormatEvent } from '@deepseek-ai/dsh-session-format'
-import { releasedV2SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v2-to-v3'
+import { decodeReleasedV2Row, releasedV2SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v2-to-v3'
 import { assertV4SourceRowAdmission } from './message-sources.ts'
 import { assertV4RetiredSyntax } from './retired-syntax.ts'
 import { assertV4SystemMessageFields } from './system-message.ts'
@@ -52,6 +52,20 @@ export const releasedV4SessionFormatCodec = Object.freeze({
     return releasedV2SessionFormatCodec.encodeEvent(event)
   },
 } satisfies SessionFormatCodec & SessionFormatCurrentEncoder)
+
+/**
+ * Decode one native V4 physical row with the same admission and framing as
+ * {@link releasedV4SessionFormatCodec}, without cross-row seq density or
+ * inherited-marker state, for readers that start mid-log.
+ * @param row - JSON-parsed physical row.
+ * @param rowIndex - physical row number used in diagnostics.
+ * @returns the logical event with expanded `sourceEventSeqs`.
+ * @throws SessionFormatError when the row is malformed or not admissible in V4.
+ */
+export function decodeReleasedV4Row(row: unknown, rowIndex: number): SessionFormatEvent {
+  assertV4RowAdmission(row)
+  return decodeReleasedV2Row(row, rowIndex)
+}
 
 /**
  * Apply native V4 admission before a scanner discards a recoverable suffix.

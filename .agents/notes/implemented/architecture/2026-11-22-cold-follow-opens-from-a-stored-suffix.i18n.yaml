@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-11-22-cold-follow-opens-from-a-stored-suffix.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-22-cold-follow-opens-from-a-stored-suffix.md
+/agent-note-cold-follow-opens-from-a-stored-suffix:
+  en: 2c26423d5f0e4771
+  zh: 089440de4f7634b9
+/agent-note-cold-follow-opens-from-a-stored-suffix/problem:
+  en: b5e36b261db4af1b
+  zh: c7402f405a2cab15
+/agent-note-cold-follow-opens-from-a-stored-suffix/decision:
+  en: 30c3a41536239801
+  zh: 7c33ce9d6f53ca03
+/agent-note-cold-follow-opens-from-a-stored-suffix/alternatives-considered:
+  en: 4cda1ca68e718b1f
+  zh: 28f98fa25b247a6c
+/agent-note-cold-follow-opens-from-a-stored-suffix/consequences:
+  en: 97e81d3f4c0a4b65
+  zh: f756dee9ebe98a5b
