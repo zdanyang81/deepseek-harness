@@ -20,6 +20,7 @@ import { ChatAside } from './ChatAside.tsx'
 import { mergeTurnRailItems } from './turn-rail-items.ts'
 import { useTextInteraction } from './text-interaction.ts'
 import { useChatScroll } from './use-chat-scroll.ts'
+import { OffscreenRows, OffscreenRowsContext } from './offscreen-rows.ts'
 import { fileMediaUrl, resolveWorkspacePath, sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import { selectSessionDirectory } from '@deepseek-ai/dsh-api-session-controller/client/directories'
 import css from './ChatView.module.css'
@@ -231,6 +232,14 @@ export function ChatView({
   const interactionIds = useInteractionIds(ids => ids)
   const textInteraction = useTextInteraction(scroll.columnRef, interactionSurfaceRef, dispatchInteraction, interactionIds)
   const flowContext = useMemo<ChatFlowHookContext>(() => ({ motion: scroll.motion }), [scroll.motion])
+  const [offscreenRows] = useState(() => new OffscreenRows())
+  const listRef = scroll.listRef
+  useEffect(() => {
+    const list = listRef.current
+    /* v8 ignore next -- ref-null guard: the list element renders unconditionally. */
+    if (list === null) return
+    return offscreenRows.attach(list.closest<HTMLElement>('[data-conversation-scroll]') ?? list)
+  }, [listRef, offscreenRows])
 
   return (
     <div className={css.frame}>
@@ -283,10 +292,12 @@ export function ChatView({
               fileImages={fileImages}
               renderCode={renderCode}
             >
-              {renderSlot('conversation.chat.flow', {
-                entries, pendingInputs, lastInputTurn, deferCollapse,
-                cwd, openFile: requestOpenFile, inspectCall, forkAt, loadImage,
-              }, { hookContext: flowContext })}
+              <OffscreenRowsContext.Provider value={offscreenRows.observe}>
+                {renderSlot('conversation.chat.flow', {
+                  entries, pendingInputs, lastInputTurn, deferCollapse,
+                  cwd, openFile: requestOpenFile, inspectCall, forkAt, loadImage,
+                }, { hookContext: flowContext })}
+              </OffscreenRowsContext.Provider>
             </MarkdownDelegateProvider>
             <div ref={interactionSurfaceRef} className={css.textInteraction} data-text-interaction-surface=""
               aria-hidden={textInteraction.active === null}>

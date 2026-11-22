@@ -10,6 +10,7 @@ import { isAtOrOutside } from '../contract/group-tree.ts'
 import { turnProcessAlwaysOpen } from '../contract/turn-process.ts'
 import { turnProcessOpen } from '../stores.ts'
 import { hiddenOrCollapsing } from './flow-motion.ts'
+import { useOffscreenRow } from './offscreen-rows.ts'
 import css from './ChatView.module.css'
 
 interface ChatNodeSeatProps extends ChatNodeOwnerProps {
@@ -129,6 +130,7 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       disclosureReset.set(disclosureReset.getSnapshot() + 1)
     }
   }, [processMember, processHidden, wrapperRef, disclosureReset])
+  useOffscreenRow(wrapperRef, routedNode !== undefined)
   const owner = useMemo<ChatNodeOwnerProps | null>(() => node === undefined
     ? null
     : {
