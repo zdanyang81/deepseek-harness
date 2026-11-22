@@ -4978,3 +4978,110 @@ it('does not infer menu targets from links or data attributes inside a plugin fl
   expect(custom).toHaveBeenCalledOnce()
   expect(h.props.resolveFilePath).not.toHaveBeenCalled()
 })
+
+describe('ChatView distant-row render skipping', () => {
+  /** jsdom has no IntersectionObserver; the stub records targets and replays scripted entries. */
+  class IntersectionObserverStub {
+    static last: IntersectionObserverStub | undefined
+    readonly targets = new Set<Element>()
+    disconnected = false
+    constructor(
+      readonly callback: IntersectionObserverCallback,
+      readonly options: IntersectionObserverInit,
+    ) { IntersectionObserverStub.last = this }
+    observe(target: Element): void { this.targets.add(target) }
+    unobserve(target: Element): void { this.targets.delete(target) }
+    disconnect(): void { this.disconnected = true; this.targets.clear() }
+    deliver(target: Element, isIntersecting: boolean, height = 120): void {
+      const entry = { target, isIntersecting, boundingClientRect: { width: 600, height } }
+      act(() => { this.callback([entry as unknown as IntersectionObserverEntry], this as unknown as IntersectionObserver) })
+    }
+  }
+  beforeEach(() => {
+    IntersectionObserverStub.last = undefined
+    vi.stubGlobal('IntersectionObserver', IntersectionObserverStub)
+  })
+  const row = (container: HTMLElement, key: string): HTMLElement => {
+    const found = [...container.querySelectorAll<HTMLElement>('[data-chat-flow-key]')]
+      .find(element => element.dataset.chatFlowKey === key)
+    if (found === undefined) throw new Error(`no row ${key}`)
+    return found
+  }
+
+  it('observes every rendered row against the scrollport with a two-viewport margin', () => {
+    const h = makeHarness({ nodes: [user(1, 'first'), assistant(2, 'answer', 1)] })
+    const view = render(<h.ChatView {...h.props} />)
+    const observer = IntersectionObserverStub.last
+    expect(observer?.options).toEqual({
+      root: view.container.querySelector('[data-chat-flow]')?.parentElement,
+      rootMargin: '200% 0px',
+    })
+    expect([...observer?.targets ?? []]).toEqual(
+      [...view.container.querySelectorAll('[data-chat-flow-key]')],
+    )
+  })
+
+  it('observes process-group roots but not the members inside their bodies', () => {
+    const nodes = [
+      userInTurn(1, 'old question', 1), reasoningAssistant(2, 'old analysis', 1, 1),
+      assistant(3, 'old progress', 1, 2), assistant(6, 'old answer', 1, 3),
+    ]
+    const builder = new ChatSnapshotBuilder()
+    const groups = new ConversationGroupStore<ProcessGroupData>()
+    const chat = installGroupedSnapshot(builder, new ProcessState(), groups, chatSnapshotFixture({
+      nodes, turnTimings: new Map([[1, { startTime: 0 }]]), turnEnds: new Map([[1, 7]]),
+    }))
+    const h = makeHarness({ chat })
+    h.setGrouped(groups)
+    const view = render(<h.ChatView {...h.props} />)
+    const roots = [...view.container.querySelectorAll<HTMLElement>('[data-chat-group-key]')]
+    expect(roots.length).toBeGreaterThan(0)
+    const targets = [...IntersectionObserverStub.last?.targets ?? []]
+    for (const root of roots) {
+      expect(targets).toContain(root)
+      for (const member of root.querySelectorAll('[data-chat-flow-key]')) expect(targets).not.toContain(member)
+    }
+  })
+
+  it('pins a far row to its measured size and restores it once it nears the viewport', () => {
+    const h = makeHarness({ nodes: [user(1, 'first'), assistant(2, 'answer', 1)] })
+    const view = render(<h.ChatView {...h.props} />)
+    const observer = IntersectionObserverStub.last!
+    const first = row(view.container, 'fixture:user:1')
+
+    observer.deliver(first, false)
+    expect(first.hasAttribute('data-chat-offscreen')).toBe(true)
+    expect(first.style.getPropertyValue('contain-intrinsic-size')).toBe('auto 600px auto 120px')
+    expect(first.textContent).toContain('first')
+
+    observer.deliver(first, true)
+    expect(first.hasAttribute('data-chat-offscreen')).toBe(false)
+    expect(first.style.getPropertyValue('contain-intrinsic-size')).toBe('')
+  })
+
+  it('leaves zero-height far rows unpinned', () => {
+    const h = makeHarness({ nodes: [user(1, 'first')] })
+    const view = render(<h.ChatView {...h.props} />)
+    const first = row(view.container, 'fixture:user:1')
+    IntersectionObserverStub.last!.deliver(first, false, 0)
+    expect(first.hasAttribute('data-chat-offscreen')).toBe(false)
+  })
+
+  it('follows rows into and out of the flow and releases everything on unmount', () => {
+    const h = makeHarness({ nodes: [user(1, 'first')] })
+    const view = render(<h.ChatView {...h.props} />)
+    const observer = IntersectionObserverStub.last!
+    const first = row(view.container, 'fixture:user:1')
+    observer.deliver(first, false)
+
+    act(() => { h.set({ nodes: [user(3, 'second')] }) })
+    const second = row(view.container, 'fixture:user:3')
+    expect([...observer.targets]).toEqual([second])
+    expect(first.hasAttribute('data-chat-offscreen')).toBe(false)
+
+    observer.deliver(second, false)
+    view.unmount()
+    expect(observer.disconnected).toBe(true)
+    expect(second.hasAttribute('data-chat-offscreen')).toBe(false)
+  })
+})

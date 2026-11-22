@@ -13,6 +13,7 @@ import type { ChatFlowSlotProps } from '../contract/slots.ts'
 import { turnProcessOpen } from '../stores.ts'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
 import { hiddenOrCollapsing } from './flow-motion.ts'
+import { OffscreenRowsContext, useOffscreenRow } from './offscreen-rows.ts'
 import { chatRenderKey } from './render-entry.ts'
 import { processTitle } from './step-process.ts'
 import { useDisclosure } from './use-disclosure.ts'
@@ -160,6 +161,7 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({ groupKey, useChatGrou
     if (spec !== undefined && !alwaysOpen) props.actions.setTurnProcessOpen(spec.turn, spec.answerStep ?? 0, true)
   }, [props.actions, spec, alwaysOpen])
   const rootRef = props.useGroupAction(outerHidden, revealOuter)
+  useOffscreenRow(rootRef, members !== undefined)
   // The header appears when a flat latest Turn becomes historical; it grows on the fold clock while the
   // body closes. A group whose whole Turn is folding never shows one in the frame it starts closing.
   const headerRef = useRef<HTMLDivElement>(null)
@@ -200,7 +202,9 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({ groupKey, useChatGrou
         data-scroll-up={edges.canScrollUp || undefined} data-scroll-down={edges.canScrollDown || undefined}
         {...events}>
         <div ref={contentRef} className={css.content} data-step-process-content data-chat-flow="">
-          <GroupMembers {...props} members={members} />
+          <OffscreenRowsContext.Provider value={null}>
+            <GroupMembers {...props} members={members} />
+          </OffscreenRowsContext.Provider>
         </div>
       </div>
     </div>
