@@ -108,7 +108,9 @@ The decision history lives in the [unified service decision](../../../.agents/no
 
 ### Observation cache
 
-`observeSession` builds point observations without a listing preflight. The cold path stats the stored session first and consults an own bounded cache keyed by the persistence instance and the `stat` revision: an unchanged revision reuses the restored unpublished Session without re-reading the log; a changed revision, or a replaced persistence instance, reloads through the handle seam and replaces the entry. The cache holds `preparedSessionCacheSize` entries with least-recently-used eviction, entries pinned by active observation leases are never evicted, and a session that goes live mid-read retries the live path.
+`observeSession` builds point observations without a listing preflight. The cold path stats the stored session first and consults an own bounded cache keyed by the persistence instance and the `stat` revision: an unchanged revision reuses the restored unpublished Session without re-reading the log; a changed revision, or a replaced persistence instance, reloads through the handle seam and replaces the entry. The cache holds `preparedSessionCacheSize` entries with least-recently-used eviction, entries pinned by active observation leases are never evicted, and a session that goes live mid-read retries the live path. Concurrent cold reads of one persistence instance and revision share one in-flight load; waiters re-observe from the top once it settles, so a failure rejects only the read that started the load.
+
+`observeSessionTail(sessionId, { sufficient })` is a display-only cold suffix read: it requires the suffix to reach the projection cache's `suffixFloor`, contain a turn boundary, and satisfy the caller's predicate, then computes exact projection values at the suffix end through `restoreSuffix`. It returns `undefined` — the caller uses `observeSession` — for a live Session, a Session already prepared at its current revision, a forked Session, a log needing interrupted-turn closers, a floor at the log start, or when persistence or the projection cache cannot seed a suffix.
 
 ### Reads and traces
 

@@ -154,7 +154,7 @@ Session Remote 方法传递 `SessionId` 或 `SessionAddress`，不靠参数类�
 |---|---|---|
 | `session.list`、`search` | header 与投影缓存；可通过有界的小日志读取判断不确定的 blank 状态 | 永不恢复 Agent |
 | `session.page(address)` | attached Session 或 persistence 日志 | 永不恢复 Agent |
-| `session.follow(address)` | 一份携带 opening page 与 projection 的 live 或 prepared observation | 先发布 snapshot，再在后台把普通冷 Session 提升一次 |
+| `session.follow(address)` | 一份携带 opening page 与 projection 的 live 或 prepared observation；普通冷 Session 可以先从已存储后缀打开（[决策](2026-11-22-cold-follow-opens-from-a-stored-suffix.zh.md)） | 先发布 snapshot，再在后台把普通冷 Session 提升一次 |
 | `session.control()` | 当前 attached Agent、pending registry 与进程内 registry | baseline 与重连不恢复 Agent |
 | `session.attachment`、fork 源读取 | 已授权的持久 Session 数据 | 读取不恢复 Agent |
 | `session.updateQueue`、`cancel` | 仅命中当前 live Agent | 不为已消失状态恢复 Agent |

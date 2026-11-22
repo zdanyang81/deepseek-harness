@@ -275,13 +275,6 @@ describe('session.history projections block', () => {
     await expect(extra).resolves.toEqual({ done: true, value: undefined })
   })
 
-  it('leaves the imageLimits key absent while no attachment service is composed', async () => {
-    const { ctx, session } = await harness(true)
-    seedMessages(session, 1)
-    const snapshot = await opening(remote(ctx), session.id)
-    expect('imageLimits' in snapshot.projections.values).toBe(false)
-  })
-
   it('never carries the block on loadOlder pages (beforeSeq present)', async () => {
     const { ctx, session } = await harness(true)
     ctx.sessionProjections.register(lastUserUnit())

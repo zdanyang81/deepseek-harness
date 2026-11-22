@@ -2,7 +2,12 @@ import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader, SurfaceIntent } from '@deepseek-ai/dsh-session'
-import type { SessionObservation } from '@deepseek-ai/dsh-session-query'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type {
+  SessionObservation,
+  SessionTailObservation,
+  SessionTailObservationOptions,
+} from '@deepseek-ai/dsh-session-query'
 import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { subagentIdentityProjectionDefinition } from '@deepseek-ai/dsh-subagent/src/projection.ts'
 import { describe, expect, it, vi } from 'vitest'
@@ -446,6 +451,11 @@ describe('SessionHistoryController', () => {
     }, signal)).resolves.toMatchObject({
       records: [{ type: 'event', event: { type: 'subagent/descriptor' } }],
     })
+    const following = transport.follow({
+      address: { kind: 'subagent', parentSessionId, childSessionId, mode: 'continuable' },
+    }, signal)[Symbol.asyncIterator]()
+    await expect(following.next()).resolves.toMatchObject({ value: { type: 'snapshot', cursor: 0 } })
+    await following.return?.()
     await expect(transport.page({
       address: {
         kind: 'subagent',
@@ -738,4 +748,165 @@ describe('SessionHistoryController', () => {
     expect(page.hasMore).toBe(false)
   })
 
+})
+
+describe('SessionHistoryController cold suffix opening', () => {
+  const sessionId = SessionId('suffix-opening')
+  const meta: SessionHeader = { version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, cwd: '/workspace', isSeeded: false }
+
+  function prompt(seq: number, sourceEventSeqs?: readonly number[]): SessionEvent {
+    return {
+      type: 'user/message',
+      seq: SessionSeq(seq),
+      time: seq + 1,
+      data: createUserMessage({ content: [{ type: 'text', text: `m${String(seq)}` }], source: { kind: 'user' } }),
+      surfaceOp: 'append',
+      ...sourceEventSeqs === undefined ? {} : { sourceEventSeqs },
+    } as SessionEvent
+  }
+
+  /** seq 0 turn/start, 1..6 prompts, 7 turn/end. */
+  function storedLog(): SessionEvent[] {
+    return [
+      event('turn/start', SessionSeq(0), { turn: 1 }),
+      ...[1, 2, 3, 4, 5, 6].map(seq => prompt(seq)),
+      event('turn/end', SessionSeq(7), { turn: 1, reason: { kind: 'completed' } }),
+    ]
+  }
+
+  function tailOf(events: readonly SessionEvent[], header: SessionHeader = meta): SessionTailObservation {
+    return {
+      header,
+      inheritedEventCount: SessionLogOffset(0),
+      events,
+      cursor: events.at(-1)?.seq ?? -1,
+      revision: 'test:suffix' as SessionTailObservation['revision'],
+      projections: { asOfSeq: events.at(-1)?.seq ?? -1, values: {} },
+    }
+  }
+
+  function prepared(events: readonly SessionEvent[], promotion = vi.fn()): SessionObservation {
+    const observation = {
+      source: 'prepared',
+      header: meta,
+      inheritedEventCount: SessionLogOffset(0),
+      events,
+      cursor: events.at(-1)?.seq ?? -1,
+      projections: { asOfSeq: events.at(-1)?.seq ?? -1, values: {} },
+      retain: () => ({ ...observation, [Symbol.dispose]: promotion }),
+      [Symbol.dispose]: vi.fn(),
+    } as unknown as SessionObservation
+    return observation
+  }
+
+  async function harness(query: {
+    observeSessionTail: (
+      id: SessionId,
+      options: SessionTailObservationOptions,
+    ) => Promise<SessionTailObservation | undefined>
+    observeSession: () => Promise<SessionObservation>
+  }) {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    ctx.provide('sessionQuery', query as never)
+    const activate = vi.fn((observation: SessionObservation) => { observation[Symbol.dispose]() })
+    return { ctx, activate, history: new SessionHistoryController(ctx, activate) }
+  }
+
+  it('opens from the suffix page, then replays events committed before the full observation and promotes it', async () => {
+    const stored = storedLog()
+    const offered: boolean[] = []
+    const { ctx, activate, history } = await harness({
+      observeSessionTail: (_id, options) => {
+        offered.push(options.sufficient(stored.slice(6)), options.sufficient(stored.slice(4)))
+        return Promise.resolve(tailOf(stored.slice(4)))
+      },
+      observeSession: () => Promise.resolve(prepared([...stored, event('turn/start', SessionSeq(8), { turn: 2 })])),
+    })
+    const abort = new AbortController()
+    const iterator = history.follow({ address: { kind: 'session', sessionId }, maxMessages: 2 }, abort.signal)[Symbol.asyncIterator]()
+
+    const opening = await iterator.next()
+    expect(offered).toEqual([false, true])
+    expect(opening.value).toMatchObject({ type: 'snapshot', cursor: 7, hasMore: true, projections: { asOfSeq: 7 } })
+    expect((opening.value as { records: { event: SessionEvent }[] }).records.map(record => record.event.seq)).toEqual([5, 6, 7])
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'event', event: { type: 'turn/start', seq: 8 } } })
+    expect(activate).toHaveBeenCalledOnce()
+    abort.abort()
+    await expect(iterator.next()).resolves.toMatchObject({ done: true })
+    await ctx.fiber.dispose()
+  })
+
+  it('opens an empty suffix at the before-first-event cursor', async () => {
+    const { ctx, history } = await harness({
+      observeSessionTail: () => Promise.resolve(tailOf([])),
+      observeSession: () => Promise.resolve(prepared([])),
+    })
+    const abort = new AbortController()
+    const iterator = history.follow({ address: { kind: 'session', sessionId } }, abort.signal)[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'snapshot', cursor: -1, records: [], hasMore: false } })
+    await iterator.return?.()
+    await ctx.fiber.dispose()
+  })
+
+  it('falls back to the full observation when the suffix cannot serve the opening page', async () => {
+    const stored = storedLog()
+    const suffixes: (SessionTailObservation | Error)[] = [
+      // Too few messages for the page.
+      tailOf(stored.slice(4)),
+      // The newest message's group reaches below the suffix.
+      tailOf([...stored.slice(4, 6), prompt(6, [3]), stored[7] as SessionEvent]),
+      tailOf(stored.slice(4), { ...meta, origin: 'subagent', parentSession: SessionId('parent') }),
+      tailOf(stored.slice(4), { version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, isSeeded: false }),
+      new Error('suffix read failed'),
+    ]
+    const { ctx, history } = await harness({
+      observeSessionTail: () => {
+        const next = suffixes.shift()
+        return next instanceof Error ? Promise.reject(next) : Promise.resolve(next)
+      },
+      observeSession: () => Promise.resolve(prepared(stored)),
+    })
+    for (const maxMessages of [10, 1, 1, 1, 1]) {
+      const abort = new AbortController()
+      const iterator = history.follow({ address: { kind: 'session', sessionId }, maxMessages }, abort.signal)[Symbol.asyncIterator]()
+      const opening = await iterator.next()
+      expect(opening.value).toMatchObject({ type: 'snapshot', cursor: 7 })
+      expect((opening.value as { records: { event: SessionEvent }[] }).records[0]?.event.seq)
+        .toBe(maxMessages === 10 ? 0 : 6)
+      abort.abort()
+      await iterator.next()
+    }
+    expect(suffixes).toEqual([])
+    await ctx.fiber.dispose()
+  })
+
+  it('propagates cancellation during the suffix read', async () => {
+    const abort = new AbortController()
+    const { ctx, history } = await harness({
+      observeSessionTail: () => {
+        abort.abort(new Error('closed'))
+        return Promise.reject(new Error('aborted read'))
+      },
+      observeSession: () => Promise.reject(new Error('unreachable')),
+    })
+    const iterator = history.follow({ address: { kind: 'session', sessionId } }, abort.signal)[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).rejects.toThrow('closed')
+    await ctx.fiber.dispose()
+  })
+
+  it('fails the follow when the full observation ends below the suffix cursor', async () => {
+    const stored = storedLog()
+    const { ctx, history } = await harness({
+      observeSessionTail: () => Promise.resolve(tailOf(stored.slice(4))),
+      observeSession: () => Promise.resolve(prepared(stored.slice(0, 6))),
+    })
+    const iterator = history.follow({ address: { kind: 'session', sessionId }, maxMessages: 2 }, signal())[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'snapshot', cursor: 7 } })
+    await expect(iterator.next()).rejects.toMatchObject({ code: 'gateway/internal' })
+    await ctx.fiber.dispose()
+  })
 })
