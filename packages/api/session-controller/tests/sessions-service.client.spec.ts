@@ -275,6 +275,50 @@ describe('scope tree', () => {
     dispose()
   })
 
+  it('coalesces transient assistant chunks into one Session notification per animation frame', async ({ bench }) => {
+    const b = bench()
+    await feedList(b, [{ id: 's1' }])
+    using reference = b.svc.retain(sid('s1'), { source: 'controllerOperation' })
+    await reference.ready
+    const binding = b.svc.binding(sid('s1'))
+    if (binding === undefined) throw new Error('expected Session binding')
+    await vi.waitFor(() => {
+      expect(binding.session.getSnapshot().openState).toBe('open')
+    })
+    await Promise.resolve()
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    let notified = 0
+    const unsubscribe = binding.session.subscribe(() => { notified++ })
+    const attemptId = brandString<LlmAttemptId>('frame-attempt')
+    b.mock.streams.push(FOLLOW, {
+      type: 'assistant-stream',
+      frame: { type: 'start', attemptId, revision: 1, startedAfterSeq: -1, turn: 1, step: 1 },
+    })
+    for (let index = 0; index < 3; index++) {
+      b.mock.streams.push(FOLLOW, {
+        type: 'assistant-stream',
+        frame: {
+          type: 'chunk', attemptId, revision: index + 2, index, time: index,
+          chunk: { type: 'text-delta', index: 0, text: `chunk ${String(index)}` },
+        },
+      })
+    }
+    await b.mock.streams.drained(FOLLOW)
+    await vi.waitFor(() => {
+      expect(binding.eventSource.getSnapshot().entries).toHaveLength(3)
+    })
+    expect(notified).toBe(0)
+    expect(frames).toHaveLength(1)
+    frames.shift()!(0)
+    expect(notified).toBe(1)
+    unsubscribe()
+    vi.unstubAllGlobals()
+  })
+
   it('replaces an active assistant baseline on reconnect without duplicate chunks', async ({ bench }) => {
     const b = bench()
     const attemptId = brandString<LlmAttemptId>('reconnect-attempt')
