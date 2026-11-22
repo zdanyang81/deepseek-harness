@@ -959,4 +959,41 @@ describe('snapshot ownership', () => {
     expect(windowAfter.entries[0]).toBe(firstEntry)
     expect(windowAfter.change).toMatchObject({ kind: 'append' })
   })
+
+  it('coalesces transient assistant chunks into one Session notification per animation frame', async () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(SessionSeq(0), 0, '流', '式'))
+    let notified = 0
+    const unsubscribe = session.subscribe(() => { notified++ })
+    await session.open()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    for (const frame of frames.splice(0)) frame(0)
+    notified = 0
+    const attemptId = 'frame-attempt' as never
+    await api.pushFollow(SID, {
+      type: 'assistant-stream',
+      frame: { type: 'start', attemptId, revision: 1, startedAfterSeq: SessionSeq(5), turn: 1, step: 1 },
+    })
+    for (let index = 0; index < 3; index++) {
+      await api.pushFollow(SID, {
+        type: 'assistant-stream',
+        frame: {
+          type: 'chunk', attemptId, revision: index + 2, index, time: index,
+          chunk: { type: 'text-delta', index: 0, text: `片${index}` },
+        },
+      })
+    }
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(windowEntries(session).filter(entry => entry.type === 'transient')).toHaveLength(3)
+    expect(notified).toBe(0)
+    expect(frames).toHaveLength(1)
+    frames.shift()!(0)
+    expect(notified).toBe(1)
+    unsubscribe()
+  })
 })
