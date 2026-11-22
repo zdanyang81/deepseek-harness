@@ -15,7 +15,11 @@ import type {
   SessionLogOffset as SessionLogOffsetType,
   SessionSeqCursor,
 } from '@deepseek-ai/dsh-session'
-import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
+import {
+  SessionQueryError,
+  type SessionObservation,
+  type SessionTailObservation,
+} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
@@ -191,30 +195,61 @@ export class SessionHistoryController {
     const onAbort = (): void => { notify() }
     signal.addEventListener('abort', onAbort, { once: true })
     try {
+      const maxMessages = request.maxMessages ?? DEFAULT_MAX_MESSAGES
+      const tail = address.kind === 'session'
+        ? await this.tailFor(address, maxMessages, signal)
+        : undefined
+      let assistantStreamOrdinalCut = 0
+      const snapshotFrame = (
+        header: SessionHeader,
+        cursor: SessionSeqCursor,
+        page: { readonly events: readonly SessionEvent[]; readonly hasMore: boolean },
+        projections: SessionObservation['projections'],
+      ): SessionFollowFrame => {
+        const assistantStream = request.assistantStream === true
+          ? this.assistantStreams.get(target)?.snapshot() ?? { revision: 0 }
+          : undefined
+        // The accumulator snapshot and this watermark are synchronous. Frames
+        // through the cut are represented or superseded by that baseline,
+        // including larger revisions from a retired Agent; later revision
+        // resets reach Client continuity validation.
+        assistantStreamOrdinalCut = assistantStreamOrdinal
+        return {
+          type: 'snapshot',
+          header: wireHeader(header),
+          cursor,
+          records: pageRecords(page.events),
+          hasMore: page.hasMore,
+          projections: projections === undefined
+            ? { asOfSeq: cursor, values: {} }
+            : projectionBlock(projections),
+          ...assistantStream === undefined ? {} : { assistantStream },
+        }
+      }
+      if (tail !== undefined) {
+        snapshotCursor = tail.cursor
+        yield snapshotFrame(tail.header, tail.cursor, tail.page, tail.projections)
+      }
       using source = await this.sourceFor(address, signal, true)
       const events = source.events
       signal.throwIfAborted()
-      const cursor = source.cursor
-      snapshotCursor = cursor
-      const page = paginate(events, undefined, request.maxMessages ?? DEFAULT_MAX_MESSAGES)
-      const assistantStream = request.assistantStream === true
-        ? this.assistantStreams.get(target)?.snapshot() ?? { revision: 0 }
-        : undefined
-      // The accumulator snapshot and this watermark are synchronous. Frames
-      // through the cut are represented or superseded by that baseline,
-      // including larger revisions from a retired Agent; later revision
-      // resets reach Client continuity validation.
-      const assistantStreamOrdinalCut = assistantStreamOrdinal
-      yield {
-        type: 'snapshot',
-        header: wireHeader(source.header),
-        cursor,
-        records: pageRecords(page.events),
-        hasMore: page.hasMore,
-        projections: source.projections === undefined
-          ? { asOfSeq: cursor, values: {} }
-          : projectionBlock(source.projections),
-        ...assistantStream === undefined ? {} : { assistantStream },
+      let nextOffset: SessionLogOffsetType
+      if (tail === undefined) {
+        const cursor = source.cursor
+        snapshotCursor = cursor
+        yield snapshotFrame(source.header, cursor, paginate(events, undefined, maxMessages), source.projections)
+        nextOffset = SessionLogOffset(cursor + 1)
+      } else {
+        if (source.cursor < tail.cursor) {
+          throw new RemoteError('gateway/internal', `session log shrank below its opening suffix seq ${String(tail.cursor)}`, {})
+        }
+        nextOffset = SessionLogOffset(tail.cursor + 1)
+        // Events committed between the suffix read and this full observation
+        // reach the Client in order before any buffered live event.
+        for (const event of events.slice(nextOffset)) {
+          yield entryFor(event)
+          nextOffset = SessionLogOffset(nextOffset + 1)
+        }
       }
       if (address.kind === 'session' && source.source === 'prepared') {
         const promotion = source.retain()
@@ -225,7 +260,6 @@ export class SessionHistoryController {
           throw error
         }
       }
-      let nextOffset = SessionLogOffset(cursor + 1)
       while (!follower.closed && !signal.aborted) {
         const item = buffered.popFront()
         if (item === undefined) {
@@ -253,6 +287,38 @@ export class SessionHistoryController {
       disposeEvent()
       disposeAssistantStream?.()
     }
+  }
+
+  /**
+   * Serve the opening page of a cold ordinary Session from a stored suffix.
+   * Any failure leaves the opening to the full observation, which reports the
+   * authoritative not-found, ownership, or corruption error.
+   */
+  private async tailFor(
+    address: Extract<SessionAddress, { kind: 'session' }>,
+    maxMessages: number,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly header: SessionHeader
+    readonly cursor: SessionSeqCursor
+    readonly page: { readonly events: readonly SessionEvent[]; readonly hasMore: boolean }
+    readonly projections: SessionObservation['projections']
+  } | undefined> {
+    let tail: SessionTailObservation | undefined
+    try {
+      tail = await this.ctx.sessionQuery.observeSessionTail(address.sessionId, {
+        signal,
+        sufficient: events => paginateSuffix(events, maxMessages) !== undefined,
+      })
+    } catch (error: unknown) {
+      signal.throwIfAborted()
+      this.ctx.logger.debug(`session-controller: suffix opening for "${address.sessionId}" fell back to a full read: ${String(error)}`)
+      return undefined
+    }
+    if (tail === undefined || tail.header.cwd === undefined || tail.header.origin === 'subagent') return undefined
+    const page = paginateSuffix(tail.events, maxMessages)
+    if (page === undefined) return undefined
+    return { header: tail.header, cursor: tail.cursor, page, projections: tail.projections }
   }
 
   private async sourceFor(
@@ -404,10 +470,44 @@ function paginate(
   throughSeq: SessionSeqCursor = events.at(-1)?.seq ?? -1,
 ): { readonly events: SessionEvent[]; readonly hasMore: boolean } {
   const end = SessionLogOffset(Math.min(throughSeq + 1, beforeSeq ?? throughSeq + 1))
+  const cut = pageCut(events, SessionLogOffset(0), end, maxMessages) as SessionLogOffsetType
+  return { events: events.slice(cut, end), hasMore: cut > 0 }
+}
+
+/**
+ * Cut the newest page from a stored suffix that ends at the log end.
+ * @param events - contiguous suffix whose first event sits at its own seq.
+ * @param maxMessages - page size in append-surface messages.
+ * @returns the page, or `undefined` when its cut reaches below the suffix.
+ */
+function paginateSuffix(
+  events: readonly SessionEvent[],
+  maxMessages: number,
+): { readonly events: SessionEvent[]; readonly hasMore: boolean } | undefined {
+  const base = SessionLogOffset(events[0]?.seq ?? 0)
+  const end = SessionLogOffset(base + events.length)
+  const cut = pageCut(events, base, end, maxMessages)
+  if (cut === undefined) return undefined
+  return { events: events.slice(cut - base), hasMore: cut > 0 }
+}
+
+/**
+ * Find the message-aligned first seq of the page ending before `end`.
+ * @param events - contiguous events whose first element has seq `base`.
+ * @param base - seq of `events[0]`.
+ * @param end - exclusive page end seq.
+ * @param maxMessages - page size in append-surface messages.
+ * @returns the cut seq, or `undefined` when it lies below `base`.
+ */
+function pageCut(
+  events: readonly SessionEvent[],
+  base: SessionLogOffsetType,
+  end: SessionLogOffsetType,
+  maxMessages: number,
+): SessionLogOffsetType | undefined {
   let count = 0
-  let cut = SessionLogOffset(0)
-  for (let index = end - 1; index >= 0; index--) {
-    const event = events[index] as SessionEvent
+  for (let index = end - 1; index >= base; index--) {
+    const event = events[index - base] as SessionEvent
     if (!MESSAGE_TYPES.has(event.type) || !isAppendSurfaceEvent(event)) continue
     count++
     const sources = event.sourceEventSeqs
@@ -417,12 +517,9 @@ function paginate(
         if (source < groupStart) groupStart = source
       }
     }
-    if (count >= maxMessages) {
-      cut = SessionLogOffset(groupStart)
-      break
-    }
+    if (count >= maxMessages) return groupStart < base ? undefined : SessionLogOffset(groupStart)
   }
-  return { events: events.slice(cut, end), hasMore: cut > 0 }
+  return base === 0 ? SessionLogOffset(0) : undefined
 }
 
 /** Translate current logical Session metadata to the browser wire. */

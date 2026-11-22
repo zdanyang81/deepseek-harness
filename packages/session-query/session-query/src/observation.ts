@@ -1,12 +1,13 @@
 /** Shared live/prepared observations for Session page and lifecycle consumers. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { interruptedTurnClosers, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader, SessionId , SessionLogOffset as SessionLogOffsetType , SessionSeqCursor } from '@deepseek-ai/dsh-session'
 import type SessionPersistence from '@deepseek-ai/dsh-session-persistence'
 import type {
   SessionPersistenceRevision,
   SessionPersistenceSnapshot,
+  SessionTailRead,
 } from '@deepseek-ai/dsh-session-persistence'
 import type { ProjectionSnapshot } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-session-projection-cache'
@@ -44,6 +45,45 @@ export interface SessionObservationOptions {
   readonly projectionMode?: 'all' | 'none'
 }
 
+/** A display-only cold suffix of one stored Session; see {@link SessionObservationReader.readTail}. */
+export interface SessionTailObservation {
+  /** Immutable Session identity metadata. */
+  readonly header: SessionHeader
+  /** Exact fork-inherited event count paired with {@link header}; always 0 because forked logs need a full read. */
+  readonly inheritedEventCount: SessionLogOffsetType
+  /** Contiguous stored events ending at {@link cursor}; starts at seq 0 only when the whole log was needed. */
+  readonly events: readonly SessionEvent[]
+  /** Last stored event seq, or -1 for an empty log. */
+  readonly cursor: SessionSeqCursor
+  /** Durable source revision the suffix was read from. */
+  readonly revision: SessionPersistenceRevision
+  /** Exact projection values at {@link cursor}, when the registry is mounted. */
+  readonly projections?: ProjectionSnapshot
+}
+
+/** Options for {@link SessionObservationReader.readTail}. */
+export interface SessionTailObservationOptions {
+  /** Optional cancellation while reading the suffix. */
+  readonly signal?: AbortSignal
+  /**
+   * The caller's own sufficiency test, combined with the reader's turn
+   * boundary and projection floor requirements.
+   * @param events - unvalidated contiguous suffix, oldest event first.
+   * @returns whether the suffix suffices for the caller.
+   */
+  readonly sufficient: (events: readonly SessionEvent[]) => boolean
+}
+
+/** One cold load in progress, shared by concurrent readers of the same revision. */
+interface InFlightLoad {
+  /** The persistence instance whose `stat` produced {@link revision}. */
+  readonly persistence: SessionPersistence
+  /** Durable revision the load reads. */
+  readonly revision: SessionPersistenceRevision
+  /** Resolves (never rejects) once the load stored its entry or failed. */
+  readonly settled: Promise<void>
+}
+
 /**
  * One reusable cold observation: an unpublished restored Session plus the
  * exact balanced log it represents, valid while the producing persistence
@@ -74,6 +114,7 @@ interface PreparedEntry {
  */
 export class SessionObservationReader {
   private readonly cache = new Map<SessionId, PreparedEntry>()
+  private readonly loads = new Map<SessionId, InFlightLoad>()
 
   /**
    * @param ctx - context carrying Session and optional persistence/projection services.
@@ -107,40 +148,31 @@ export class SessionObservationReader {
       if (attachedDuringStat !== undefined) return this.live(attachedDuringStat, projectionMode)
       let entry = this.cachedEntry(persistence, sessionId, snapshot.revision)
       if (entry === undefined) {
-        const loaded = await this.loadSource(persistence, sessionId, signal)
-        throwIfObservationAborted(signal)
-        const attached = this.ctx.sessions.get(sessionId)
-        if (attached !== undefined) return this.live(attached, projectionMode)
-        // Ownership transfer into `prepare` freezes the seed in place, so the
-        // entry keeps its own detached copies of the just-read events.
-        const seed = loaded.events.map(event => structuredClone(event))
-        let session: Session
-        try {
-          session = this.ctx.sessions.prepare(sessionId, {
-            seed,
-            meta: structuredClone(loaded.header),
-            inheritedEventCount: loaded.inheritedEventCount,
-            seedSource: 'persistence',
-          })
-        } catch (error: unknown) {
-          // The store rejects an id with a live owner: that owner is the
-          // fresher source, so retry the live path. Any other rejection means
-          // the stored log failed restore validation.
-          if (this.ctx.sessions.get(sessionId) !== undefined) continue
-          throw new SessionQueryError(
-            `stored session "${sessionId}" is corrupt: ${errorMessage(error)}`,
-            'SESSION_QUERY_CORRUPT_SESSION',
-            { cause: error },
-          )
+        const inFlight = this.loads.get(sessionId)
+        if (inFlight !== undefined
+          && inFlight.persistence === persistence
+          && inFlight.revision === snapshot.revision) {
+          // The other reader's outcome (entry, live owner, or failure) is
+          // re-observed from the top under this reader's own signal.
+          await inFlight.settled
+          continue
         }
-        entry = {
+        let settle!: () => void
+        const load: InFlightLoad = {
           persistence,
           revision: snapshot.revision,
-          session,
-          events: Object.freeze(seed),
-          refs: 0,
+          settled: new Promise<void>((resolve) => { settle = resolve }),
         }
-        this.store(sessionId, entry)
+        this.loads.set(sessionId, load)
+        let prepared: PreparedEntry | 'live'
+        try {
+          prepared = await this.prepareEntry(persistence, sessionId, snapshot.revision, signal)
+        } finally {
+          if (this.loads.get(sessionId) === load) this.loads.delete(sessionId)
+          settle()
+        }
+        if (prepared === 'live') continue
+        entry = prepared
       }
 
       let projections: ProjectionSnapshot | undefined
@@ -155,6 +187,117 @@ export class SessionObservationReader {
       }
       return this.preparedLease(sessionId, entry, projections)
     }
+  }
+
+  /**
+   * Read a display-only cold suffix whose projections are exact at its last
+   * event, or report that only {@link read} can serve this Session.
+   * @param sessionId - logical Session identity.
+   * @param options - the caller's sufficiency predicate and cancellation.
+   * @returns the suffix, or `undefined` when the Session is live, already
+   *   prepared at its current revision, forked, needs crash closers, or its
+   *   persistence or projection cache cannot seed a suffix.
+   */
+  async readTail(
+    sessionId: SessionId,
+    options: SessionTailObservationOptions,
+  ): Promise<SessionTailObservation | undefined> {
+    const { signal, sufficient } = options
+    throwIfObservationAborted(signal)
+    if (this.ctx.sessions.get(sessionId) !== undefined) return undefined
+    const persistence = this.ctx.get('sessionPersistence')
+    if (persistence?.readTail === undefined) return undefined
+    const registry = this.ctx.get('sessionProjections')
+    const cache = this.ctx.get('sessionProjectionCache')
+    if (registry !== undefined && cache === undefined) return undefined
+
+    const snapshot = await this.statSource(persistence, sessionId, signal)
+    if (snapshot.header.isSeeded) return undefined
+    if (this.cachedEntry(persistence, sessionId, snapshot.revision) !== undefined) return undefined
+    let floor: SessionLogOffsetType = SessionLogOffset(0)
+    if (registry !== undefined && cache !== undefined) {
+      const cachedFloor = cache.suffixFloor(snapshot.header, SessionLogOffset(0))
+      if (cachedFloor === undefined) return undefined
+      floor = cachedFloor
+    }
+
+    let tail: SessionTailRead | undefined
+    try {
+      tail = await persistence.readTail(sessionId, {
+        ...signal === undefined ? {} : { signal },
+        sufficient: events => (events[0] as SessionEvent).seq <= floor
+          && events.some(isTurnBoundary)
+          && sufficient(events),
+      })
+    } catch (error: unknown) {
+      throwIfObservationAborted(signal)
+      throw mapPersistenceFailure(sessionId, error)
+    }
+    throwIfObservationAborted(signal)
+    if (tail === undefined || this.ctx.sessions.get(sessionId) !== undefined) return undefined
+    const { events } = tail
+    if (interruptedTurnClosers(events).length > 0) return undefined
+    const cursor: SessionSeqCursor = events.at(-1)?.seq ?? -1
+    const baseSeq = SessionLogOffset(events[0]?.seq ?? cursor + 1)
+    let projections: ProjectionSnapshot | undefined
+    if (registry !== undefined && cache !== undefined) {
+      projections = cache.restoreSuffix(tail.meta, tail.inheritedEventCount, events, baseSeq)
+      if (projections === undefined) return undefined
+    }
+    return {
+      header: tail.meta,
+      inheritedEventCount: tail.inheritedEventCount,
+      events,
+      cursor,
+      revision: tail.revision,
+      ...projections === undefined ? {} : { projections },
+    }
+  }
+
+  /**
+   * Read and prepare one cold Session, or report that a live owner appeared.
+   * @returns the stored entry, or `'live'` when the live path must be retried.
+   */
+  private async prepareEntry(
+    persistence: SessionPersistence,
+    sessionId: SessionId,
+    revision: SessionPersistenceRevision,
+    signal: AbortSignal | undefined,
+  ): Promise<PreparedEntry | 'live'> {
+    const loaded = await this.loadSource(persistence, sessionId, signal)
+    throwIfObservationAborted(signal)
+    if (this.ctx.sessions.get(sessionId) !== undefined) return 'live'
+    // Ownership transfer into `prepare` freezes the seed in place, so the
+    // entry keeps its own detached copies of the just-read events.
+    const seed = loaded.events.map(event => structuredClone(event))
+    let session: Session
+    try {
+      session = this.ctx.sessions.prepare(sessionId, {
+        seed,
+        meta: structuredClone(loaded.header),
+        inheritedEventCount: loaded.inheritedEventCount,
+        seedSource: 'persistence',
+      })
+    } catch (error: unknown) {
+      // The store rejects an id with a live owner: that owner is the
+      // fresher source, so retry the live path. Any other rejection means
+      // the stored log failed restore validation.
+      if (this.ctx.sessions.get(sessionId) !== undefined) return 'live'
+      throw new SessionQueryError(
+        `stored session "${sessionId}" is corrupt: ${errorMessage(error)}`,
+        'SESSION_QUERY_CORRUPT_SESSION',
+        { cause: error },
+      )
+    }
+    const entry: PreparedEntry = {
+      persistence,
+      revision,
+      session,
+      events: Object.freeze(seed),
+      refs: 0,
+    }
+    this.store(sessionId, entry)
+    return entry
   }
 
   /** Observe the stored snapshot, mapping absence and backend failures to the query taxonomy. */
@@ -302,6 +445,10 @@ export class SessionObservationReader {
       ? registry.hydrate(entry.session, {}, entry.events, SessionLogOffset(0))
       : cache.hydratePrepared(entry.session, entry.events)
   }
+}
+
+function isTurnBoundary(event: SessionEvent): boolean {
+  return event.type === 'turn/start' || event.type === 'turn/end'
 }
 
 function throwIfObservationAborted(signal: AbortSignal | undefined): void {

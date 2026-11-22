@@ -406,6 +406,41 @@ function parseHeaderRecord(record: Buffer): ReturnType<typeof fromHeaderLine> {
 }
 
 /**
+ * Parse one complete header record without reading any event row.
+ * @param record - the complete first JSONL record, including its newline.
+ * @returns the stored header.
+ * @throws when the record is not exactly one valid current header line.
+ */
+export function parseHeaderRecordMeta(record: Buffer): SessionHeader {
+  return parseHeaderRecord(record).meta
+}
+
+/**
+ * Decode a buffer holding only complete event records, as one durable batch
+ * frame does, into storage-expanded events. Sequence order is not checked.
+ * @param plaintext - newline-terminated event records.
+ * @returns the decoded events in record order.
+ * @throws when the buffer ends inside a record or a record does not parse.
+ */
+export function parseEventRecords(plaintext: Buffer): SessionEvent[] {
+  if (plaintext.length > 0 && plaintext.at(-1) !== 0x0A) {
+    throw new Error('session log frame ends inside a record')
+  }
+  const events: SessionEvent[] = []
+  let lineStart = 0
+  for (
+    let newline = plaintext.indexOf(0x0A);
+    newline !== -1;
+    newline = plaintext.indexOf(0x0A, lineStart)
+  ) {
+    const line = plaintext.subarray(lineStart, newline)
+    events.push(expandProvenanceFromStorage(JSON.parse(line.toString('utf8'))) as SessionEvent)
+    lineStart = newline + 1
+  }
+  return events
+}
+
+/**
  * Incrementally scan complete JSONL event records after an independently
  * supplied header record. Newline search and byte offsets stay on raw buffers;
  * only complete records are decoded to UTF-8. A fragment crossing writes is
