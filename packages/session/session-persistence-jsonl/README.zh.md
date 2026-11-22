@@ -75,7 +75,7 @@ kind: "package-reference"
 
 ### 读取日志
 
-`open(id, 'read'|'write')` 选择最高规范 generation，并在返回句柄前为受支持的历史源发布一个并列的当前后继；源保持逐字节不变。句柄的 `read(offset?, length?)` 随后提供经过验证的连续切片，绝不包含撕裂尾部。撕裂的最终 Zstandard 帧会被部分解码：其中已刷入的完整 JSONL 记录被恢复进逻辑日志，写句柄的第一次修改会截掉当前 generation 的撕裂字节并在自己的批次之前持久重写这些恢复的记录。写 open 会用已验证的存储前缀预热句柄，一个按 revision 为键的有界 memo 让紧接的观察到恢复交接复用该解析。`stat(id)` 与 `list()` 只选择并转换最高 generation 的 header，不读取事件行，也不发布迁移输出；快照携带所选文件的 `sizeBytes` 与尽力而为的 stat 派生修订号。选择 `compression: 'none'` 后，日志是外部读取方可直接消费的换行分隔文本；压缩默认值必须经后端读取。
+`open(id, 'read'|'write')` 选择最高规范 generation，并在返回句柄前为受支持的历史源发布一个并列的当前后继；源保持逐字节不变。句柄的 `read(offset?, length?)` 随后提供经过验证的连续切片，绝不包含撕裂尾部。撕裂的最终 Zstandard 帧会被部分解码：其中已刷入的完整 JSONL 记录被恢复进逻辑日志，写句柄的第一次修改会截掉当前 generation 的撕裂字节并在自己的批次之前持久重写这些恢复的记录。写 open 会用已验证的存储前缀预热句柄，一个按 revision 为键的有界 memo 让紧接的观察到恢复交接复用该解析。`stat(id)` 与 `list()` 只选择并转换最高 generation 的 header，不读取事件行，也不发布迁移输出；快照携带所选文件的 `sizeBytes` 与尽力而为的 stat 派生修订号。`readTail(id, { sufficient })` 先解码 header 帧，再解码最新的完整事件帧，向前按帧数翻倍加宽直到谓词接受该后缀，并检查已解码的 seq 是否连续；同一修订号下已 memo 的完整读取会直接提供后缀而无需解码。对未压缩的根、待实体化或不存在的会话、历史 generation、分叉日志、撕裂的最终帧或任何解码失败，它返回 `undefined`，把诊断交给完整读取。选择 `compression: 'none'` 后，日志是外部读取方可直接消费的换行分隔文本；压缩默认值必须经后端读取。
 
 -----
 

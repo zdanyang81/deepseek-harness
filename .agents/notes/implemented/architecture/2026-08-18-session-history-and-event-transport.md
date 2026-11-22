@@ -154,7 +154,7 @@ Each method explicitly selects a cold inspection, live-only lookup, or resume-ca
 |---|---|---|
 | `session.list`, `search` | headers and projection cache; a bounded small-log read can resolve uncertain blankness | Never resumes an Agent |
 | `session.page(address)` | attached Session or persistence log | Never resumes an Agent |
-| `session.follow(address)` | one live or prepared observation carrying the opening page and projections | Publishes the snapshot first, then promotes an ordinary cold Session once in the background |
+| `session.follow(address)` | one live or prepared observation carrying the opening page and projections; an ordinary cold Session may open from a stored suffix first ([decision](2026-11-22-cold-follow-opens-from-a-stored-suffix.md)) | Publishes the snapshot first, then promotes an ordinary cold Session once in the background |
 | `session.control()` | current attached Agents, pending registry, and process-local registries | Baseline and reconnect do not resume an Agent |
 | `session.attachment`, fork source read | authorized durable Session data | A read does not resume an Agent |
 | `session.updateQueue`, `cancel` | only the current live Agent | Does not resume vanished state |
