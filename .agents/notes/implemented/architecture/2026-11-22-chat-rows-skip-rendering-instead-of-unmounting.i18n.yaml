@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-11-22-chat-rows-skip-rendering-instead-of-unmounting.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-22-chat-rows-skip-rendering-instead-of-unmounting.md
+/agent-note-chat-rows-skip-rendering-instead-of-unmounting:
+  en: bd674b5accb04866
+  zh: 6b6223c006be3352
+/agent-note-chat-rows-skip-rendering-instead-of-unmounting/problem:
+  en: ed7eedf9161a4587
+  zh: ddca57378b1eedd2
+/agent-note-chat-rows-skip-rendering-instead-of-unmounting/decision:
+  en: 935c767c77a5a97b
+  zh: e1c83ed02cd45526
+/agent-note-chat-rows-skip-rendering-instead-of-unmounting/alternatives-considered:
+  en: d86945614ad62e4a
+  zh: 2f92b91a8b480c35
+/agent-note-chat-rows-skip-rendering-instead-of-unmounting/consequences:
+  en: 5b291b0a14af5738
+  zh: 0360449e13ed2847
