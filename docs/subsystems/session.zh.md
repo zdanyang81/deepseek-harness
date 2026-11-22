@@ -708,6 +708,14 @@ inspect( sessionId: SessionId, signal?: AbortSignal, ): Promise<SessionInspectio
 @Remote('list') async list(_request: SessionListRequest, signal: AbortSignal): Promise<SessionListValue>
 
 /**
+ * Read one Session's first human prompt without resuming an Agent.
+ * @param request - durable Session identity.
+ * @param signal - cancellation for persistence reads.
+ * @returns bounded first-prompt text.
+ */
+@Remote('firstPrompt') async firstPrompt(request: SessionFirstPromptRequest, signal: AbortSignal): Promise<SessionFirstPromptValue>
+
+/**
  * Search visible Session content without resuming an Agent.
  * @param request - literal message-content query.
  * @param signal - cancellation for list and search reads.

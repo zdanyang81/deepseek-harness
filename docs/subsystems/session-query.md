@@ -388,6 +388,15 @@ Exact reads, filters, and traces are backend-independent concrete behavior. A ba
 observeSession( sessionId: SessionId, options: SessionObservationOptions = {}, ): Promise<SessionObservation>
 
 /**
+ * Read a display-only cold suffix with exact projections, without restoring
+ * the Session or decoding its whole log.
+ * @param sessionId - logical Session identity.
+ * @param options - the caller's sufficiency predicate and cancellation.
+ * @returns the suffix, or `undefined` when only {@link observeSession} can serve this Session.
+ */
+observeSessionTail( sessionId: SessionId, options: SessionTailObservationOptions, ): Promise<SessionTailObservation | undefined>
+
+/**
  * Search the live-preferred logical corpus and group by session.
  * @param request - query text, metadata filters, page size, and cursor.
  * @param exec - optional cancellation control.
